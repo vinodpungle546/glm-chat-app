@@ -1,0 +1,11 @@
+services:
+  glm-chat:
+    build: .
+    container_name: glm-flash-chat
+    ports:
+      - "8503:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./data/sessions:/app/sessions
+    restart: unless-stopped
