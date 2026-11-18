@@ -8,4 +8,6 @@ services:
       - .env
     volumes:
       - ./data/sessions:/app/sessions
+      - ./data/projects:/app/projects
+      - ./data/connectors:/app/data
     restart: unless-stopped
