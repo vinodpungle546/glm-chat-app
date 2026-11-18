@@ -5,7 +5,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py chat.py web_search.py doc_extract.py projects.py tools.py connectors.py ./
+COPY .streamlit/ .streamlit/
 
 EXPOSE 8501
 
