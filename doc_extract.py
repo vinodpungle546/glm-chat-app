@@ -40,6 +40,9 @@ def extract_text(filename: str, data: bytes) -> str:
 
 
 def _extract_pdf(data: bytes) -> str:
+    """Text of every page of a PDF (pypdf). Raises UnsupportedDocumentError for scanned, image-only PDFs that
+    contain no text.
+    """
     from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(data))
@@ -54,6 +57,7 @@ def _extract_pdf(data: bytes) -> str:
 
 
 def _extract_docx(data: bytes) -> str:
+    """Text of a Word document: its paragraphs, one per line (python-docx)."""
     import docx  # python-docx
 
     document = docx.Document(io.BytesIO(data))
@@ -61,6 +65,9 @@ def _extract_docx(data: bytes) -> str:
 
 
 def _extract_xlsx(data: bytes) -> str:
+    """Text of an Excel workbook: each sheet's name, then each non-empty row as 'cell | cell | cell' (openpyxl,
+    formulas read as their saved values).
+    """
     from openpyxl import load_workbook
 
     workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)

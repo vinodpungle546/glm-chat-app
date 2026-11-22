@@ -1,0 +1,62 @@
+{
+ "meeting": {
+  "title": "Interview — QA engineer candidate",
+  "project": ""
+ },
+ "tldr": [
+  "Rita has two years of Playwright automation for payment apps",
+  "Strong test design; mobile testing experience unclear",
+  "Recommended for the final round"
+ ],
+ "topics": [],
+ "decisions": [
+  {
+   "decision": "Move Rita to the final round",
+   "made_by": "Helen",
+   "rationale": "Strong test design",
+   "timestamp": "00:01:40"
+  }
+ ],
+ "action_items": [
+  {
+   "action": "Send the feedback form to recruiting",
+   "owner": "Jonas",
+   "due_date": "today",
+   "priority": "Medium",
+   "timestamp": "00:02:00"
+  }
+ ],
+ "risks": [],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "candidate": "Rita",
+  "position": "QA engineer",
+  "competencies": [
+   {
+    "competency": "Test design",
+    "assessment": "Strong",
+    "evidence": "Layered plan for testing a refund flow"
+   },
+   {
+    "competency": "Mobile testing",
+    "assessment": "Unclear",
+    "evidence": "Not covered"
+   }
+  ],
+  "strengths": [
+   "Two years of Playwright automation",
+   "Clear test design"
+  ],
+  "concerns": [
+   "Mobile testing experience"
+  ],
+  "recommendation": "Move to the final round"
+ }
+}

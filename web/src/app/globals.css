@@ -1,0 +1,191 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens. Light is the base; .dark (set by next-themes, following the system by default) overrides. */
+:root {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f6f6f5;
+  --sidebar: #f8f8f7;
+  --hover: #efefed;
+  --border: #e6e5e2;
+  --border-strong: #d6d4cf;
+  --fg: #1d1c1a;
+  --muted: #6f6c66;
+  --faint: #9b978f;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-fg: #ffffff;
+  --accent-soft: #eef0ff;
+  --success: #15803d;
+  --success-soft: #e8f6ed;
+  --warning: #b45309;
+  --warning-soft: #fdf3e2;
+  --danger: #c2410c;
+  --danger-soft: #fdeee6;
+  --user-bubble: #f2f1ee;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.06);
+  --ring: rgb(79 70 229 / 0.35);
+}
+
+.dark {
+  --bg: #1a1a1a;
+  --surface: #222222;
+  --surface-2: #262626;
+  --sidebar: #141414;
+  --hover: #2c2c2c;
+  --border: #303030;
+  --border-strong: #3d3d3d;
+  --fg: #ececea;
+  --muted: #a3a09a;
+  --faint: #77746f;
+  --accent: #8b85ff;
+  --accent-hover: #a29dff;
+  --accent-fg: #14123a;
+  --accent-soft: #26244a;
+  --success: #4ade80;
+  --success-soft: #14301f;
+  --warning: #fbbf24;
+  --warning-soft: #362a10;
+  --danger: #fb923c;
+  --danger-soft: #3a2014;
+  --user-bubble: #2c2c2c;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.35);
+  --ring: rgb(139 133 255 / 0.45);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-sidebar: var(--sidebar);
+  --color-hover: var(--hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-user-bubble: var(--user-bubble);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  --shadow-card: var(--shadow);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--border);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* Thin scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* Markdown answers */
+.prose-chat {
+  line-height: 1.65;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+.prose-chat > * + * {
+  margin-top: 0.75em;
+}
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin-top: 1.2em;
+}
+.prose-chat h1 { font-size: 1.25rem; }
+.prose-chat h2 { font-size: 1.1rem; }
+.prose-chat h3 { font-size: 1rem; }
+.prose-chat ul { list-style: disc; padding-left: 1.4em; }
+.prose-chat ol { list-style: decimal; padding-left: 1.4em; }
+.prose-chat li + li { margin-top: 0.25em; }
+.prose-chat a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-chat strong { font-weight: 600; }
+.prose-chat code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+}
+.prose-chat pre {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.9em 1em;
+  overflow-x: auto;
+}
+.prose-chat pre code { background: none; border: 0; padding: 0; }
+.prose-chat blockquote { border-left: 3px solid var(--border-strong); padding-left: 0.9em; color: var(--muted); }
+.prose-chat table { width: 100%; border-collapse: collapse; font-size: 0.88rem; display: block; overflow-x: auto; }
+.prose-chat th, .prose-chat td { border: 1px solid var(--border); padding: 0.4em 0.6em; text-align: left; vertical-align: top; }
+.prose-chat th { background: var(--surface-2); font-weight: 600; }
+.prose-chat hr { border-color: var(--border); }
+
+.caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--fg);
+  opacity: 0.6;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { to { visibility: hidden; } }
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--hover) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+  border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

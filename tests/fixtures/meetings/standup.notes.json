@@ -1,0 +1,69 @@
+{
+ "meeting": {
+  "title": "Daily stand-up — Payments squad",
+  "project": "Payments"
+ },
+ "tldr": [
+  "Android regression is done; iOS refund testing is blocked on test devices",
+  "Refund endpoint fix merged and going to staging today",
+  "Owen retests refunds by Friday"
+ ],
+ "topics": [],
+ "decisions": [],
+ "action_items": [
+  {
+   "action": "Chase procurement about the iOS test devices",
+   "owner": "Priya",
+   "due_date": "today",
+   "priority": "High",
+   "timestamp": "00:01:00"
+  },
+  {
+   "action": "Deploy the refund endpoint fix to staging",
+   "owner": "Mai",
+   "due_date": "today",
+   "priority": "High",
+   "timestamp": "00:01:20"
+  },
+  {
+   "action": "Retest refunds on staging",
+   "owner": "Owen",
+   "due_date": "Friday",
+   "priority": "Medium",
+   "timestamp": "00:02:00"
+  }
+ ],
+ "risks": [
+  {
+   "item": "iOS test devices have not arrived",
+   "type": "Blocker",
+   "impact": "iOS refund testing can't start",
+   "owner": "Priya",
+   "mitigation": "Chase procurement"
+  }
+ ],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "standup_updates": [
+   {
+    "person": "Owen",
+    "yesterday": "Finished Android regression run",
+    "today": "Test the iOS refund flow",
+    "blockers": "iOS test devices not arrived"
+   },
+   {
+    "person": "Mai",
+    "yesterday": "Merged the refund endpoint fix",
+    "today": "Deploy the fix to staging",
+    "blockers": "None"
+   }
+  ]
+ }
+}

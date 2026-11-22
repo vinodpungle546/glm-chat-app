@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "quorum/meeting-notes.schema.json",
+  "title": "Meeting notes",
+  "description": "What the model returns for one meeting (or one part of a long meeting). The app validates it, fills gaps (Unassigned/TBD, dates, timestamps) and renders it with templates/<type>.md.",
+  "type": "object",
+  "required": ["meeting", "tldr", "decisions", "action_items"],
+  "properties": {
+    "meeting": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "date": {"type": "string", "description": "20 Nov 2026"},
+        "start_time": {"type": "string", "description": "14:30"},
+        "duration": {"type": "string", "description": "26 min"},
+        "type": {"$ref": "#/$defs/meeting_type"},
+        "project": {"type": "string", "description": "Project or client, if mentioned"},
+        "attendees": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "role": {"type": "string"},
+              "uncertain": {"type": "boolean"}
+            }
+          }
+        },
+        "absentees": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "tldr": {"type": "array", "items": {"type": "string", "minLength": 3}, "minItems": 1, "maxItems": 5},
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "points"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text"],
+              "properties": {
+                "text": {"type": "string", "minLength": 1},
+                "speaker": {"type": "string"},
+                "timestamp": {"$ref": "#/$defs/timestamp_or_empty"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["decision", "timestamp"],
+        "properties": {
+          "decision": {"type": "string", "minLength": 3},
+          "made_by": {"type": "string"},
+          "rationale": {"type": "string"},
+          "timestamp": {"$ref": "#/$defs/timestamp"}
+        }
+      }
+    },
+    "action_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action", "owner", "due_date", "timestamp"],
+        "properties": {
+          "action": {"type": "string", "minLength": 3},
+          "owner": {"type": "string", "description": "One person, or Unassigned"},
+          "due_date": {"type": "string", "description": "20 Nov 2026, or TBD"},
+          "priority": {"enum": ["High", "Medium", "Low", ""]},
+          "timestamp": {"$ref": "#/$defs/timestamp"}
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item", "type"],
+        "properties": {
+          "item": {"type": "string", "minLength": 3},
+          "type": {"enum": ["Risk", "Issue", "Blocker", "Dependency"]},
+          "impact": {"type": "string"},
+          "owner": {"type": "string"},
+          "mitigation": {"type": "string"},
+          "timestamp": {"$ref": "#/$defs/timestamp_or_empty"}
+        }
+      }
+    },
+    "open_questions": {"type": "array", "items": {"type": "string", "minLength": 3}},
+    "next_steps": {"type": "array", "items": {"type": "string", "minLength": 3}},
+    "next_meeting": {
+      "type": "object",
+      "properties": {
+        "date": {"type": "string"},
+        "time": {"type": "string"},
+        "agenda": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "quotes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["speaker", "quote", "timestamp"],
+        "properties": {
+          "speaker": {"type": "string"},
+          "quote": {"type": "string", "minLength": 3},
+          "timestamp": {"$ref": "#/$defs/timestamp"}
+        }
+      }
+    },
+    "details": {
+      "type": "object",
+      "description": "Fields for the meeting type (see SKILL.md → Meeting types). Unused fields may be omitted.",
+      "properties": {
+        "standup_updates": {"type": "array", "items": {"type": "object", "required": ["person"], "properties": {
+          "person": {"type": "string"}, "yesterday": {"type": "string"}, "today": {"type": "string"}, "blockers": {"type": "string"}}}},
+        "sprint_goal": {"type": "string"},
+        "committed_stories": {"type": "array", "items": {"type": "object", "required": ["story"], "properties": {
+          "story": {"type": "string"}, "owner": {"type": "string"}, "estimate": {"type": "string"}}}},
+        "capacity": {"type": "string"},
+        "went_well": {"type": "array", "items": {"type": "string"}},
+        "didnt_go_well": {"type": "array", "items": {"type": "string"}},
+        "rag_status": {"type": "object", "properties": {
+          "overall": {"enum": ["Red", "Amber", "Green", ""]}, "reason": {"type": "string"}}},
+        "milestones": {"type": "array", "items": {"type": "object", "required": ["milestone"], "properties": {
+          "milestone": {"type": "string"}, "date": {"type": "string"}, "status": {"type": "string"}}}},
+        "assumptions": {"type": "array", "items": {"type": "string"}},
+        "escalations": {"type": "array", "items": {"type": "string"}},
+        "client_requests": {"type": "array", "items": {"type": "string"}},
+        "our_commitments": {"type": "array", "items": {"type": "object", "required": ["commitment"], "properties": {
+          "commitment": {"type": "string"}, "owner": {"type": "string"}, "due_date": {"type": "string"}}}},
+        "readiness": {"type": "array", "items": {"type": "object", "required": ["item"], "properties": {
+          "item": {"type": "string"}, "status": {"enum": ["Ready", "Not ready", "At risk", "Unknown", ""]}, "owner": {"type": "string"}}}},
+        "go_no_go": {"type": "object", "properties": {
+          "decision": {"enum": ["Go", "No-go", "Conditional go", "Pending", ""]}, "conditions": {"type": "string"}, "timestamp": {"$ref": "#/$defs/timestamp_or_empty"}}},
+        "sign_offs": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {
+          "name": {"type": "string"}, "area": {"type": "string"}, "status": {"type": "string"}}}},
+        "rollback_plan": {"type": "string"},
+        "incident_timeline": {"type": "array", "items": {"type": "object", "required": ["event"], "properties": {
+          "time": {"type": "string"}, "event": {"type": "string"}}}},
+        "impact": {"type": "string"},
+        "root_cause": {"type": "string"},
+        "discussion_points": {"type": "array", "items": {"type": "string"}},
+        "feedback": {"type": "array", "items": {"type": "object", "required": ["feedback"], "properties": {
+          "from": {"type": "string"}, "feedback": {"type": "string"}}}},
+        "candidate": {"type": "string"},
+        "position": {"type": "string"},
+        "competencies": {"type": "array", "items": {"type": "object", "required": ["competency"], "properties": {
+          "competency": {"type": "string"}, "assessment": {"type": "string"}, "evidence": {"type": "string"}}}},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "concerns": {"type": "array", "items": {"type": "string"}},
+        "recommendation": {"type": "string"},
+        "idea_themes": {"type": "array", "items": {"type": "object", "required": ["theme"], "properties": {
+          "theme": {"type": "string"}, "ideas": {"type": "array", "items": {"type": "string"}}}}},
+        "shortlisted_ideas": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  },
+  "$defs": {
+    "timestamp": {"type": "string", "pattern": "^(\\d{1,2}:\\d{2}(:\\d{2})?|#\\d+)$", "description": "hh:mm:ss from the transcript line (or #line for transcripts without times)"},
+    "timestamp_or_empty": {"type": "string", "pattern": "^(\\d{1,2}:\\d{2}(:\\d{2})?|#\\d+)?$"},
+    "meeting_type": {"enum": ["general", "standup", "sprint_planning", "retrospective", "status_review",
+                              "client_call", "release_review", "incident", "one_on_one", "interview", "brainstorm"]}
+  }
+}

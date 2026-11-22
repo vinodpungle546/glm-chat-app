@@ -1,0 +1,55 @@
+{
+ "meeting": {
+  "title": "Sprint 23 retrospective",
+  "project": ""
+ },
+ "tldr": [
+  "Pairing and the review checklist worked well",
+  "Long standups and mid-sprint sales requests were problems",
+  "Standups timeboxed to 15 minutes; sales intake form coming"
+ ],
+ "topics": [],
+ "decisions": [
+  {
+   "decision": "Timebox standups to fifteen minutes",
+   "made_by": "Sam",
+   "rationale": "Standups ran long",
+   "timestamp": "00:02:00"
+  }
+ ],
+ "action_items": [
+  {
+   "action": "Timebox standups to fifteen minutes",
+   "owner": "Sam",
+   "due_date": "Monday",
+   "priority": "Medium",
+   "timestamp": "00:02:00"
+  },
+  {
+   "action": "Set up an intake form for sales requests",
+   "owner": "Kofi",
+   "due_date": "end of the week",
+   "priority": "Medium",
+   "timestamp": "00:02:20"
+  }
+ ],
+ "risks": [],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "went_well": [
+   "Pairing on search shipped it two days early",
+   "Code review checklist caught three bugs"
+  ],
+  "didnt_go_well": [
+   "Standups ran about thirty minutes",
+   "Surprise sales requests mid-sprint"
+  ]
+ }
+}

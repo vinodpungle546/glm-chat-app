@@ -1,0 +1,73 @@
+{
+ "id": "fx-sprint-planning",
+ "title": "Sprint 24 planning",
+ "source_name": "sprint_planning.m4a",
+ "source_path": "/fake/Meetings/sprint_planning.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 160.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Raj",
+  "SPEAKER_01": "Elena",
+  "SPEAKER_02": "Ben"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "Welcome to sprint planning. The sprint goal I'd propose is: customers can pay with saved cards."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "Capacity is lower this sprint, I'm on holiday Thursday and Friday, so about thirty story points total."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "The saved cards API story is eight points, I can take it."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "I'll take the checkout UI story, five points."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Let's commit to those two plus the card-expiry email, three points, owned by Ben."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "The risk is the payment gateway sandbox, it has been unstable all week."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 120.0,
+   "end": 138.0,
+   "text": "Then I'll ask the gateway vendor for a stable sandbox by Monday."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 140.0,
+   "end": 158.0,
+   "text": "Agreed, the sprint goal is saved-card payments."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

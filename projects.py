@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/app/projects"))
+PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path(os.environ.get("APP_DATA_DIR", "./data")) / "projects"))
 DEFAULT_PROJECT_ID = "default"
 DEFAULT_PROJECT_NAME = "General"
 
@@ -32,10 +32,17 @@ PROJECT_FIELDS = {
     "tools": DEFAULT_TOOLS,
     "memory": [],
     "documents": [],
+    # Local-model routing defaults for the project
+    "default_model_mode": "auto",      # auto | local | cloud
+    "default_local_model": "",         # "" = use LOCAL_LLM_MODEL from .env
+    "confidential_terms": [],          # e.g. client names -> treated as sensitive in Auto mode
 }
+
+MODEL_MODES = ("auto", "local", "cloud")
 
 
 def _now() -> str:
+    """The current local time as an ISO string (used for `updated_at`)."""
     return datetime.now().isoformat(timespec="seconds")
 
 
@@ -44,8 +51,10 @@ def _normalize(data: dict, project_id: str) -> dict:
     project = {"id": project_id}
     for field, default in PROJECT_FIELDS.items():
         value = data.get(field, None)
-        if field == "instructions":
+        if isinstance(default, str):
             value = str(value) if value is not None else default
+            if field == "default_model_mode" and value not in MODEL_MODES:
+                value = default
         elif isinstance(value, list):
             value = list(value)  # copy so projects never share list instances
         else:
@@ -58,6 +67,7 @@ def _normalize(data: dict, project_id: str) -> dict:
 
 
 def project_path(project_id: str) -> Path:
+    """Where a project's settings file lives: PROJECTS_DIR/<id>/project.json."""
     return PROJECTS_DIR / project_id / "project.json"
 
 

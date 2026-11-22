@@ -59,6 +59,9 @@ def stream_response(messages: list[dict]) -> str:
 
 
 def main() -> None:
+    """Runs the terminal chat loop: reads a line, sends the whole conversation to the model, prints the streamed
+    reply. /exit quits and /reset clears the history.
+    """
     if not API_KEY:
         sys.exit("Error: CODA_GEAI_API_KEY is not set in the environment.")
 

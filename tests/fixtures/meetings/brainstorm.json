@@ -1,0 +1,61 @@
+{
+ "id": "fx-brainstorm",
+ "title": "Onboarding ideas workshop",
+ "source_name": "brainstorm.m4a",
+ "source_path": "/fake/Meetings/brainstorm.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 120.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Tara",
+  "SPEAKER_01": "Luis",
+  "SPEAKER_02": "Mei"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "Let's brainstorm ideas to improve onboarding. What if we gave new joiners a buddy?"
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "Idea: a welcome video from the founders."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "Could we automate laptop setup so it's ready on day one?"
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "Another idea, a first-week checklist in the app."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Let's vote. The shortlist is the buddy scheme and automated laptop setup."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "I'll write a one-page proposal for laptop automation by next Wednesday."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

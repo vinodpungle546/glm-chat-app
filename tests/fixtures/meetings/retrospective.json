@@ -1,0 +1,73 @@
+{
+ "id": "fx-retrospective",
+ "title": "Sprint 23 retrospective",
+ "source_name": "retrospective.m4a",
+ "source_path": "/fake/Meetings/retrospective.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 160.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Sam",
+  "SPEAKER_01": "Ivy",
+  "SPEAKER_02": "Kofi"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "Let's start the retro. What went well this sprint?"
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "Pairing on the search feature went really well, we shipped it two days early."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "The new code review checklist caught three bugs before release."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "And what didn't go well?"
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Standups ran long, often thirty minutes."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "We kept getting surprise requests from sales mid-sprint."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 120.0,
+   "end": 138.0,
+   "text": "Action: I'll timebox standups to fifteen minutes from Monday."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 140.0,
+   "end": 158.0,
+   "text": "I'll set up an intake form for sales requests this week."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

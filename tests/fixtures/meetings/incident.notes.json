@@ -1,0 +1,56 @@
+{
+ "meeting": {
+  "title": "Checkout outage postmortem",
+  "project": ""
+ },
+ "tldr": [
+  "Checkout was down 23 minutes; about 2,000 customers affected",
+  "Root cause: a config change set the payment timeout to zero",
+  "Timeout validation and a checklist update agreed"
+ ],
+ "topics": [],
+ "decisions": [],
+ "action_items": [
+  {
+   "action": "Add validation so the payment timeout can't be below one second",
+   "owner": "Yusuf",
+   "due_date": "next Friday",
+   "priority": "High",
+   "timestamp": "00:01:40"
+  },
+  {
+   "action": "Update the change review checklist to include config values",
+   "owner": "Lena",
+   "due_date": "",
+   "priority": "Medium",
+   "timestamp": "00:02:00"
+  }
+ ],
+ "risks": [],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "impact": "About two thousand customers couldn't pay for twenty-three minutes",
+  "root_cause": "A config change set the payment timeout to zero",
+  "incident_timeline": [
+   {
+    "time": "14:02",
+    "event": "Alert fired for checkout errors; on-call paged"
+   },
+   {
+    "time": "14:20",
+    "event": "Config change rolled back"
+   },
+   {
+    "time": "14:25",
+    "event": "Checkout recovered"
+   }
+  ]
+ }
+}

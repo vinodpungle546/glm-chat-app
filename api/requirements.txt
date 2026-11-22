@@ -1,0 +1,10 @@
+# API for the Next.js frontend (also needs ../requirements.txt)
+fastapi==0.163.2
+uvicorn==0.54.0
+python-multipart==0.0.26
+httpx==0.28.1
+# Meeting-notes exports (PDF from the notes' HTML; Markdown → HTML for email/PDF)
+fpdf2==2.9.0
+markdown==3.11.3
+# Cloud providers added in Settings → Models: Claude through the official SDK
+anthropic==2.6.0

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for slash-command skill activation in tools.py and app.py."""
+"""Tests for slash-command skill activation in tools.py (the agent side is in test_agent.py)."""
 
-import app as app_module
 import tools as tl
 
 
@@ -109,56 +108,3 @@ def test_build_agent_prompt_with_turn_skill():
     prompt = tl.build_agent_system_prompt("Base.", project, "", "", turn_skill="Answer as a table")
     assert "Skill directive" in prompt
     assert "Answer as a table" in prompt
-
-
-# ---------------------------------------------------------------------------
-# App-level slash flow
-# ---------------------------------------------------------------------------
-
-def make_project(**overrides) -> dict:
-    project = {
-        "id": "p1",
-        "name": "Test",
-        "instructions": "",
-        "skills": SKILLS,
-        "tools": [],
-        "memory": [],
-        "documents": [],
-    }
-    project.update(overrides)
-    return project
-
-
-class FakeState(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __setattr__(self, key, value):
-        self[key] = value
-
-
-
-def test_generate_reply_applies_turn_skill(monkeypatch):
-    from unittest.mock import patch
-
-    captured = {}
-
-    def fake_stream(messages):
-        captured["messages"] = messages
-        return "ok"
-
-    state = FakeState(
-        web_search_enabled=False,
-        messages=[{"role": "user", "content": "hi"}],
-        project=make_project(),
-    )
-    monkeypatch.setattr(app_module.st, "session_state", state, raising=False)
-    with patch.object(app_module, "stream_assistant_reply", side_effect=fake_stream):
-        app_module.generate_reply("explain X", turn_skill="Answer as a table")
-
-    system_content = captured["messages"][0]["content"]
-    assert "Skill directive" in system_content
-    assert "Answer as a table" in system_content

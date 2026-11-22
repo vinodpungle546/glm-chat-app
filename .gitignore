@@ -4,3 +4,15 @@ __pycache__/
 .coda/
 .vscode/
 data/
+transcriber/.venv/
+transcriber/bin/
+.pytest_cache/
+.venv/
+web/node_modules/
+web/.next/
+web/test-results/
+web/playwright-report/
+web/.next-e2e/
+web/e2e/.data/
+web/.next-build*/
+.DS_Store

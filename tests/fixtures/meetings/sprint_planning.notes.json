@@ -1,0 +1,73 @@
+{
+ "meeting": {
+  "title": "Sprint 24 planning",
+  "project": ""
+ },
+ "tldr": [
+  "Sprint goal: customers can pay with saved cards",
+  "Committed 16 points across three stories; capacity about 30 points",
+  "Gateway sandbox instability is the main risk"
+ ],
+ "topics": [],
+ "decisions": [
+  {
+   "decision": "Sprint goal is saved-card payments",
+   "made_by": "Raj",
+   "rationale": "",
+   "timestamp": "00:02:20"
+  },
+  {
+   "decision": "Commit to the saved cards API, checkout UI and card-expiry email stories",
+   "made_by": "Raj",
+   "rationale": "",
+   "timestamp": "00:01:20"
+  }
+ ],
+ "action_items": [
+  {
+   "action": "Ask the gateway vendor for a stable sandbox",
+   "owner": "Raj",
+   "due_date": "by Monday",
+   "priority": "High",
+   "timestamp": "00:02:00"
+  }
+ ],
+ "risks": [
+  {
+   "item": "Payment gateway sandbox is unstable",
+   "type": "Risk",
+   "impact": "Could block API testing",
+   "owner": "Raj",
+   "mitigation": "Ask the vendor for a stable sandbox"
+  }
+ ],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "sprint_goal": "Customers can pay with saved cards",
+  "capacity": "About 30 story points; Elena on holiday Thursday and Friday",
+  "committed_stories": [
+   {
+    "story": "Saved cards API",
+    "owner": "Ben",
+    "estimate": "8 points"
+   },
+   {
+    "story": "Checkout UI",
+    "owner": "Elena",
+    "estimate": "5 points"
+   },
+   {
+    "story": "Card-expiry email",
+    "owner": "Ben",
+    "estimate": "3 points"
+   }
+  ]
+ }
+}

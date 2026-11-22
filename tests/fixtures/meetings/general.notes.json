@@ -1,0 +1,76 @@
+{
+ "meeting": {
+  "title": "Office move planning",
+  "project": ""
+ },
+ "tldr": [
+  "Office move agreed for Saturday 5 Dec 2026",
+  "Tom books the furniture vendor; Leah shares the seating plan",
+  "Parking permit transfer is still unclear"
+ ],
+ "topics": [
+  {
+   "title": "Move date",
+   "points": [
+    {
+     "text": "New floor is ready from 1 December",
+     "speaker": "Tom",
+     "timestamp": "00:00:20"
+    },
+    {
+     "text": "Moving on a Saturday avoids losing a working day",
+     "speaker": "Leah",
+     "timestamp": "00:00:40"
+    }
+   ]
+  }
+ ],
+ "decisions": [
+  {
+   "decision": "Move the office on Saturday 5 December",
+   "made_by": "Nadia",
+   "rationale": "Nobody loses a working day",
+   "timestamp": "00:01:00"
+  }
+ ],
+ "action_items": [
+  {
+   "action": "Book the furniture vendor",
+   "owner": "Tom",
+   "due_date": "Friday",
+   "priority": "High",
+   "timestamp": "00:01:20"
+  },
+  {
+   "action": "Send the seating plan to everyone",
+   "owner": "Leah",
+   "due_date": "tomorrow",
+   "priority": "Medium",
+   "timestamp": "00:01:40"
+  },
+  {
+   "action": "Check with facilities whether parking permits transfer",
+   "owner": "",
+   "due_date": "",
+   "priority": "",
+   "timestamp": "00:02:20"
+  }
+ ],
+ "risks": [],
+ "open_questions": [
+  "Do parking permits transfer automatically?"
+ ],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [
+  {
+   "speaker": "Nadia",
+   "quote": "Agreed, we will move on the fifth of December.",
+   "timestamp": "00:01:00"
+  }
+ ]
+}

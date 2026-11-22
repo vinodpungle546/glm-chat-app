@@ -1,0 +1,67 @@
+{
+ "id": "fx-release-review",
+ "title": "Release 4.2 go/no-go",
+ "source_name": "release_review.m4a",
+ "source_path": "/fake/Meetings/release_review.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 140.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Cian",
+  "SPEAKER_01": "Owen",
+  "SPEAKER_02": "Mai"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "This is the go/no-go for release 4.2. Let's walk the readiness checklist."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "Regression is complete and passed, QA signs off."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "Database migration scripts are ready and tested on staging."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "Release notes are not ready yet, I'll finish them by two o'clock."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Rollback plan: we redeploy 4.1 and restore the database snapshot taken before release."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "Decision: conditional go, provided the release notes are done before the deployment."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 120.0,
+   "end": 138.0,
+   "text": "I'll run the smoke test right after the deployment."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

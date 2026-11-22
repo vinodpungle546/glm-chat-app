@@ -52,11 +52,13 @@ def run_tool(name: str, tool_input: str, context: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _tool_web_search(query: str, _context: dict) -> str:
+    """Tool 'web_search': searches the web (DuckDuckGo) and returns numbered results as text for the model."""
     results = web_search.search_web(query)
     return web_search.format_results(results)
 
 
 def _tool_datetime(_query: str, _context: dict) -> str:
+    """Tool 'datetime': today's date and the current time, so the model can answer 'what day is it'."""
     now = datetime.now()
     return f"Current date and time: {now.strftime('%A, %B %d, %Y at %H:%M')}"
 

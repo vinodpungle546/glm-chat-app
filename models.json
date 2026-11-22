@@ -1,0 +1,91 @@
+{
+  "_comment": "Chat models offered in the UI. Local models are Ollama tags; any other model installed in Ollama is listed too. The cloud entry uses GAIA_MODEL from .env (the cloud model and its requests are fixed). New chats start on `default` (the cloud model).",
+  "_comment_vision": "Vision models read video frames for on-screen names (Settings → Speakers); kept apart from chat models because a chat model may be text-only. Chosen with scripts/benchmark_vision_models.py.",
+  "_comment_speakers": "speaker_default reads the transcript to identify speakers (local only); vision_default reads video frames. Chosen with scripts/benchmark_screen_names.py and benchmark_vision_models.py. speeds: measured on the M4 MacBook Air until this Mac has measured its own.",
+  "default": "cloud:gaia",
+  "speaker_default": "gemma4:e4b",
+  "vision_default": "qwen3-vl:4b-instruct",
+  "models": [
+    {
+      "id": "local:gemma4:e4b",
+      "provider": "ollama",
+      "model": "gemma4:e4b",
+      "label": "Gemma 4 E4B",
+      "description": "Google Gemma 4, 4B effective parameters, 128k context. Fast, strong summaries.",
+      "size_gb": 9.6,
+      "min_ollama": "0.31.0",
+      "uses": [
+        "chat",
+        "summary",
+        "speakers"
+      ],
+      "speeds": {
+        "prefill_tps": 593,
+        "gen_tps": 59
+      }
+    },
+    {
+      "id": "local:qwen3:8b",
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "label": "Qwen3 8B",
+      "description": "Alibaba Qwen3, 8B parameters. Good reasoning and tool JSON.",
+      "size_gb": 5.2,
+      "uses": [
+        "chat",
+        "summary",
+        "speakers"
+      ],
+      "speeds": {
+        "prefill_tps": 110,
+        "gen_tps": 13
+      }
+    },
+    {
+      "id": "local:qwen3:4b",
+      "provider": "ollama",
+      "model": "qwen3:4b",
+      "label": "Qwen3 4B",
+      "description": "Small and fast, but always reasons first (slow to start replying).",
+      "size_gb": 2.5,
+      "uses": [
+        "chat"
+      ]
+    },
+    {
+      "id": "cloud:gaia",
+      "provider": "gaia",
+      "model": "${GAIA_MODEL}",
+      "label": "GLM-5.3 Flash",
+      "description": "Globant GAIA cloud. Sends content off this Mac.",
+      "uses": [
+        "chat",
+        "summary"
+      ]
+    }
+  ],
+  "vision_models": [
+    {
+      "model": "qwen3-vl:4b-instruct",
+      "label": "Qwen3-VL 4B",
+      "description": "Best at spotting the highlighted tile in our tests (thin, white and Zoom/Meet borders); about 9 s per frame.",
+      "size_gb": 3.3,
+      "speeds": {
+        "prefill_tps": 347,
+        "gen_tps": 30
+      },
+      "seconds_per_frame": 9.0
+    },
+    {
+      "model": "gemma4:e4b",
+      "label": "Gemma 4 E4B",
+      "description": "Fastest (about 4 s per frame) but misses thin and white highlight borders.",
+      "size_gb": 9.6,
+      "speeds": {
+        "prefill_tps": 593,
+        "gen_tps": 59
+      },
+      "seconds_per_frame": 4.2
+    }
+  ]
+}

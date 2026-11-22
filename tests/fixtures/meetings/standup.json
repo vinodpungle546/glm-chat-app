@@ -1,0 +1,73 @@
+{
+ "id": "fx-standup",
+ "title": "Daily stand-up — Payments squad",
+ "source_name": "standup.m4a",
+ "source_path": "/fake/Meetings/standup.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 160.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Priya",
+  "SPEAKER_01": "Owen",
+  "SPEAKER_02": "Mai"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "Morning everyone, quick stand-up. Owen, you first."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "Yesterday I finished the regression run on Android. Today I'm testing the refund flow on iOS."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "I'm blocked on the iOS test devices, they haven't arrived yet."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "I'll chase procurement about the test devices today."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Yesterday I merged the refund endpoint fix. Today I'll deploy it to staging."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "No blockers for me."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 120.0,
+   "end": 138.0,
+   "text": "Great. Owen, please retest refunds once Mai's fix is on staging, by Friday."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 140.0,
+   "end": 158.0,
+   "text": "Will do."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

@@ -1,0 +1,62 @@
+{
+ "meeting": {
+  "title": "Onboarding ideas workshop",
+  "project": ""
+ },
+ "tldr": [
+  "Four onboarding ideas raised",
+  "Shortlist: buddy scheme and automated laptop setup",
+  "Mei drafts a laptop automation proposal"
+ ],
+ "topics": [],
+ "decisions": [
+  {
+   "decision": "Shortlist the buddy scheme and automated laptop setup",
+   "made_by": "Tara",
+   "rationale": "Vote",
+   "timestamp": "00:01:20"
+  }
+ ],
+ "action_items": [
+  {
+   "action": "Write a one-page proposal for laptop automation",
+   "owner": "Mei",
+   "due_date": "next Wednesday",
+   "priority": "Medium",
+   "timestamp": "00:01:40"
+  }
+ ],
+ "risks": [],
+ "open_questions": [],
+ "next_steps": [
+  "Review the laptop automation proposal"
+ ],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "idea_themes": [
+   {
+    "theme": "People",
+    "ideas": [
+     "Buddy for new joiners",
+     "Welcome video from the founders"
+    ]
+   },
+   {
+    "theme": "Tools",
+    "ideas": [
+     "Automated laptop setup",
+     "First-week checklist in the app"
+    ]
+   }
+  ],
+  "shortlisted_ideas": [
+   "Buddy scheme",
+   "Automated laptop setup"
+  ]
+ }
+}

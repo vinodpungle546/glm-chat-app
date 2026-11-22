@@ -1,0 +1,70 @@
+{
+ "meeting": {
+  "title": "Atlas programme steering review",
+  "project": "Atlas"
+ },
+ "tldr": [
+  "Atlas is Amber: data migration slipped to 15 Dec",
+  "UAT on track for January; go-live date kept",
+  "Security review delay escalated to the CIO"
+ ],
+ "topics": [],
+ "decisions": [
+  {
+   "decision": "Keep the January go-live date",
+   "made_by": "Grace",
+   "rationale": "UAT is on track",
+   "timestamp": "00:02:20"
+  }
+ ],
+ "action_items": [
+  {
+   "action": "Escalate the security review delay to the CIO",
+   "owner": "Grace",
+   "due_date": "",
+   "priority": "High",
+   "timestamp": "00:01:40"
+  }
+ ],
+ "risks": [
+  {
+   "item": "Data migration depends on the security review",
+   "type": "Dependency",
+   "impact": "Migration milestone could slip again",
+   "owner": "Hugo",
+   "mitigation": "Escalate to the CIO"
+  }
+ ],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "rag_status": {
+   "overall": "Amber",
+   "reason": "Data migration slipped"
+  },
+  "milestones": [
+   {
+    "milestone": "Data migration",
+    "date": "15 Dec 2026",
+    "status": "Slipped"
+   },
+   {
+    "milestone": "UAT",
+    "date": "January",
+    "status": "On track"
+   }
+  ],
+  "assumptions": [
+   "Vendor delivers the API keys next week"
+  ],
+  "escalations": [
+   "Security review delay escalated to the CIO"
+  ]
+ }
+}

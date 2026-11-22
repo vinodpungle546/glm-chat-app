@@ -1,0 +1,50 @@
+{
+ "meeting": {
+  "title": "1:1 Zoe / Arjun",
+  "project": ""
+ },
+ "tldr": [
+  "Arjun's workload is heavy because of reporting",
+  "Positive feedback on the incident write-up",
+  "Arjun wants to lead a project next quarter"
+ ],
+ "topics": [],
+ "decisions": [],
+ "action_items": [
+  {
+   "action": "Find a project Arjun can lead",
+   "owner": "Zoe",
+   "due_date": "end of the month",
+   "priority": "Medium",
+   "timestamp": "00:01:20"
+  },
+  {
+   "action": "Automate the weekly report",
+   "owner": "Arjun",
+   "due_date": "",
+   "priority": "Medium",
+   "timestamp": "00:01:40"
+  }
+ ],
+ "risks": [],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "discussion_points": [
+   "Workload: reporting takes most of the week",
+   "Growth: lead a small project next quarter"
+  ],
+  "feedback": [
+   {
+    "from": "Zoe",
+    "feedback": "The incident write-up last week was really clear"
+   }
+  ]
+ }
+}

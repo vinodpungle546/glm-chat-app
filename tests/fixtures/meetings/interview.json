@@ -1,0 +1,67 @@
+{
+ "id": "fx-interview",
+ "title": "Interview — QA engineer candidate",
+ "source_name": "interview.m4a",
+ "source_path": "/fake/Meetings/interview.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 140.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Helen",
+  "SPEAKER_01": "Jonas",
+  "SPEAKER_02": "Rita"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "Thanks for coming in, Rita. Tell me about your background in test automation."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "I've built Playwright test suites for two years, mostly for payment apps."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "Walk me through how you'd test a refund flow."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "I'd start with the API contract tests, then end-to-end tests for the happy path and the edge cases like partial refunds."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Strong answer on test design. I'm less sure about her experience with mobile testing."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "Agreed. My recommendation is to move her to the final round."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 120.0,
+   "end": 138.0,
+   "text": "I'll send the feedback form to recruiting today."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

@@ -1,0 +1,13 @@
+# Native (non-Docker) transcriber service for Apple silicon. Python 3.12.
+# Installed by scripts/setup_local_ai.sh into transcriber/.venv
+mlx==0.32.4
+mlx-whisper==0.4.3
+pyannote.audio==4.1.0
+torch==2.15.0
+torchaudio==2.11.1
+numpy==2.5.5
+soundfile==0.14.0
+huggingface-hub==2.4.0
+fastapi==0.163.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.34

@@ -1,0 +1,110 @@
+[
+ {
+  "uuid": "conv-refund",
+  "name": "Refund endpoint rollout",
+  "created_at": "2026-10-02T09:00:00Z",
+  "updated_at": "2026-10-02T09:30:00Z",
+  "account": {
+   "uuid": "acc-1"
+  },
+  "chat_messages": [
+   {
+    "uuid": "m-28879303",
+    "sender": "human",
+    "text": "Mai is deploying the refund endpoint fix to staging. What should QA retest?",
+    "content": [
+     {
+      "type": "text",
+      "text": "Mai is deploying the refund endpoint fix to staging. What should QA retest?"
+     }
+    ],
+    "created_at": "2026-10-02T09:00:00Z",
+    "attachments": [],
+    "files": []
+   },
+   {
+    "uuid": "m-98768494",
+    "sender": "assistant",
+    "text": "Retest full and partial refunds on staging after Mai's deploy, then run the payments regression.",
+    "content": [
+     {
+      "type": "text",
+      "text": "Retest full and partial refunds on staging after Mai's deploy, then run the payments regression."
+     }
+    ],
+    "created_at": "2026-10-02T09:00:30Z",
+    "attachments": [],
+    "files": []
+   }
+  ],
+  "new_field_from_the_future": true
+ },
+ {
+  "uuid": "conv-atlas",
+  "name": "Atlas go-live checklist",
+  "created_at": "2026-11-05T10:00:00Z",
+  "updated_at": "2026-11-05T10:20:00Z",
+  "account": {
+   "uuid": "acc-1"
+  },
+  "chat_messages": [
+   {
+    "uuid": "m-51050692",
+    "sender": "human",
+    "text": "What goes on the Atlas go-live checklist?",
+    "content": [
+     {
+      "type": "text",
+      "text": "What goes on the Atlas go-live checklist?"
+     }
+    ],
+    "created_at": "2026-11-05T09:00:00Z",
+    "attachments": [],
+    "files": []
+   },
+   {
+    "uuid": "m-47051722",
+    "sender": "assistant",
+    "text": "Regression sign-off, a rollback plan and release notes.",
+    "content": [
+     {
+      "type": "text",
+      "text": "Regression sign-off, a rollback plan and release notes."
+     }
+    ],
+    "created_at": "2026-11-05T09:00:30Z",
+    "attachments": [],
+    "files": []
+   },
+   {
+    "uuid": "m-37332981",
+    "sender": "human",
+    "text": "Who signs off?",
+    "content": [
+     {
+      "type": "text",
+      "text": "Who signs off?"
+     }
+    ],
+    "created_at": "2026-11-05T09:01:00Z",
+    "attachments": [],
+    "files": []
+   },
+   {
+    "uuid": "m-4867964",
+    "sender": "assistant",
+    "text": "Cian as release manager, after QA signs off regression.",
+    "content": [
+     {
+      "type": "text",
+      "text": "Cian as release manager, after QA signs off regression."
+     }
+    ],
+    "created_at": "2026-11-05T09:01:30Z",
+    "attachments": [],
+    "files": []
+   }
+  ],
+  "new_field_from_the_future": true
+ }
+]

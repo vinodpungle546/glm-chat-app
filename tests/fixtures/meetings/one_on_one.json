@@ -1,0 +1,59 @@
+{
+ "id": "fx-one-on-one",
+ "title": "1:1 Zoe / Arjun",
+ "source_name": "one_on_one.m4a",
+ "source_path": "/fake/Meetings/one_on_one.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 120.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Zoe",
+  "SPEAKER_01": "Arjun"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "How are you feeling about your workload this month?"
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "It's heavy, the reporting work takes most of my week."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "Feedback for you: your incident write-up last week was really clear."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "Thanks. For my growth I'd like to lead a small project next quarter."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Good, I'll look for a project you can lead by the end of the month."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "I'll automate the weekly report so it takes less time."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

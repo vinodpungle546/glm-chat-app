@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>local.quorum.record</string>
+	<key>CFBundleName</key>
+	<string>Quorum Recorder</string>
+	<key>CFBundleExecutable</key>
+	<string>quorum-record</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Quorum records your microphone as its own track, so your words are marked as yours in the transcript.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Quorum records the meeting window and its sound to transcribe the call on this Mac.</string>
+</dict>
+</plist>

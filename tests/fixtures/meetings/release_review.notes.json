@@ -1,0 +1,77 @@
+{
+ "meeting": {
+  "title": "Release 4.2 go/no-go",
+  "project": ""
+ },
+ "tldr": [
+  "Conditional go for release 4.2",
+  "Regression passed and migrations are ready",
+  "Release notes must be finished before deployment"
+ ],
+ "topics": [],
+ "decisions": [
+  {
+   "decision": "Conditional go for release 4.2",
+   "made_by": "Cian",
+   "rationale": "Release notes must be done before the deployment",
+   "timestamp": "00:01:40"
+  }
+ ],
+ "action_items": [
+  {
+   "action": "Finish the release notes",
+   "owner": "Cian",
+   "due_date": "today",
+   "priority": "High",
+   "timestamp": "00:01:00"
+  },
+  {
+   "action": "Run the smoke test after the deployment",
+   "owner": "Owen",
+   "due_date": "today",
+   "priority": "High",
+   "timestamp": "00:02:00"
+  }
+ ],
+ "risks": [],
+ "open_questions": [],
+ "next_steps": [],
+ "next_meeting": {
+  "date": "",
+  "time": "",
+  "agenda": []
+ },
+ "quotes": [],
+ "details": {
+  "readiness": [
+   {
+    "item": "Regression",
+    "status": "Ready",
+    "owner": "Owen"
+   },
+   {
+    "item": "Database migration scripts",
+    "status": "Ready",
+    "owner": "Mai"
+   },
+   {
+    "item": "Release notes",
+    "status": "Not ready",
+    "owner": "Cian"
+   }
+  ],
+  "go_no_go": {
+   "decision": "Conditional go",
+   "conditions": "Release notes done before deployment",
+   "timestamp": "00:01:40"
+  },
+  "sign_offs": [
+   {
+    "name": "Owen",
+    "area": "QA",
+    "status": "Signed off"
+   }
+  ],
+  "rollback_plan": "Redeploy 4.1 and restore the pre-release database snapshot"
+ }
+}

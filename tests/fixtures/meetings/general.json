@@ -1,0 +1,73 @@
+{
+ "id": "fx-general",
+ "title": "Office move planning",
+ "source_name": "general.m4a",
+ "source_path": "/fake/Meetings/general.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 160.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Nadia",
+  "SPEAKER_01": "Tom",
+  "SPEAKER_02": "Leah"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "Thanks for joining. Today we need to agree the date for the office move and who handles the furniture vendor."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "The landlord confirmed the new floor is ready from the first of December."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "Then I suggest we move on Saturday the fifth so nobody loses a working day."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "Agreed, we will move on the fifth of December."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "I'll book the furniture vendor by Friday."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "I can send the seating plan to everyone tomorrow."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 120.0,
+   "end": 138.0,
+   "text": "One open question is whether the parking permits transfer automatically."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 140.0,
+   "end": 158.0,
+   "text": "I don't know, someone should check with facilities."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}

@@ -1,0 +1,67 @@
+{
+ "id": "fx-client-call",
+ "title": "Northwind weekly client call",
+ "source_name": "client_call.m4a",
+ "source_path": "/fake/Meetings/client_call.m4a",
+ "source_type": "audio",
+ "created_at": "2026-11-18T10:00:00",
+ "duration": 140.0,
+ "language": "en",
+ "diarization": true,
+ "speakers": [
+  "SPEAKER_00",
+  "SPEAKER_01",
+  "SPEAKER_02"
+ ],
+ "speaker_names": {
+  "SPEAKER_00": "Carla",
+  "SPEAKER_01": "Dev",
+  "SPEAKER_02": "Ana"
+ },
+ "segments": [
+  {
+   "speaker": "SPEAKER_00",
+   "start": 0.0,
+   "end": 18.0,
+   "text": "From our side at Northwind, we need the invoice export in CSV, that's the top request."
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 20.0,
+   "end": 38.0,
+   "text": "We can deliver the CSV export by the end of next week."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 40.0,
+   "end": 58.0,
+   "text": "We'd also like a demo of the approval workflow."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 60.0,
+   "end": 78.0,
+   "text": "I'll schedule the approval workflow demo for Tuesday."
+  },
+  {
+   "speaker": "SPEAKER_00",
+   "start": 80.0,
+   "end": 98.0,
+   "text": "Is the single sign-on integration still planned for this quarter?"
+  },
+  {
+   "speaker": "SPEAKER_01",
+   "start": 100.0,
+   "end": 118.0,
+   "text": "We need to confirm that with our architect and come back to you."
+  },
+  {
+   "speaker": "SPEAKER_02",
+   "start": 120.0,
+   "end": 138.0,
+   "text": "I'll send you the meeting recap today."
+  }
+ ],
+ "processing_seconds": 30,
+ "timestamps": true
+}
