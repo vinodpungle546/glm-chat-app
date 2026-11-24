@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from transcriber import correct, text_import  # noqa: E402  (pure Python: conversation text, corrections)
+from transcriber import correct, edits as transcript_edits, text_import  # noqa: E402  (pure Python)
 from tests import fake_cloud, fake_mcp  # noqa: E402  (fake Claude/OpenAI APIs, fake MCP registry and servers)
 
 CLOUD_PORT = 18997   # fake Anthropic at http://127.0.0.1:18997, fake OpenAI at …/openai/v1
@@ -131,11 +131,38 @@ def video_transcript() -> dict:
             "speaker_embeddings": {"SPEAKER_00": [0.9, 0.1, 0.0], "SPEAKER_01": [0.1, 0.9, 0.0], "SPEAKER_02": [0.0, 0.1, 0.9]},
             "screen_names": {"SPEAKER_00": {"names": [tile("Priya Sharma", [1.5, 6.0, 10.5, 12.0])], "frames": 4, "resolved": 4},
                              "SPEAKER_01": {"names": [], "frames": 3, "resolved": 0},
-                             "SPEAKER_02": {"names": [tile("Mei Lin Chen", [16.5, 18.0, 19.0])], "frames": 3, "resolved": 3}},
+                             "SPEAKER_02": {"names": [tile("Mei Lin Chen", [16.5, 18.0, 19.0])], "frames": 3, "resolved": 3,
+                                            "conflicts": [{"t": 18.0, "ocr": "Mei Lin Chen", "vision": "Daniel Okafor"}]}},
             "screen_info": {"status": "done", "frames": 10, "resolved": 7, "screen_share": 3, "unresolved": 0,
-                            "vision_frames": 0, "vision_model": "", "seconds": 4.2, "error": ""},
+                            "vision_frames": 6, "vision_model": "qwen3-vl:4b-instruct", "seconds": 4.2, "error": "",
+                            "reviewed": 6, "confirmed": 4, "corrected": 1, "filled": 0, "no_answer": 1, "review_reason": ""},
             "segments": [{"speaker": s, "start": i * 5.0, "end": i * 5.0 + 4.5, "text": t} for i, (s, t) in enumerate(segs)],
             "processing_seconds": 14, "timestamps": True}
+
+
+def panel_transcript() -> dict:
+    """A call recorded with the People panel open: the participants list (Priya Sharma, Owen Hart, Mei Lin Chen,
+    Tomás Rivera; Sam Lee only invited) marked who was speaking. SPEAKER_01 is only "Owen" to the local model."""
+    t = video_transcript()
+    segs = [("SPEAKER_00", "Morning all, let's start the Atlas release sync."),
+            ("SPEAKER_01", "Hi, Owen here. The Atlas payments regression is green."),
+            ("SPEAKER_00", "Thanks. Please rerun the refund tests by Friday."),
+            ("SPEAKER_02", "I'll deploy the refund fix to staging today."),
+            ("SPEAKER_01", "Sounds good, I'll watch the dashboards.")]
+    entry = lambda name, count, listed, both, times: {"name": name, "count": count, "times": times, "truncated": False,  # noqa: E731
+                                                      "ocr": count, "speaker_view": 0, "vision": 0, "list": listed, "both": both}
+    roster = [("Priya Sharma", 0.0), ("Owen Hart", 0.0), ("Mei Lin Chen", 2.0), ("Tomás Rivera", 3.0)]
+    t.update(id="t-panel", title="Atlas sync with the People panel", segments=[
+        {"speaker": spk, "start": i * 5.0, "end": i * 5.0 + 4.5, "text": text} for i, (spk, text) in enumerate(segs)],
+        screen_names={"SPEAKER_00": {"names": [entry("Priya Sharma", 3, 9, 2, [1.5, 10.5, 12.0])], "frames": 3, "resolved": 3,
+                                     "list_frames": 9, "conflicts": [{"t": 12.0, "ocr": "Priya Sharma", "list": "Tomás Rivera"}]},
+                      "SPEAKER_01": {"names": [], "frames": 3, "resolved": 0},
+                      "SPEAKER_02": {"names": [], "frames": 2, "resolved": 0}},
+        screen_info=dict(t["screen_info"], list_frames=9, list_agree=2, list_conflicts=1),
+        participants={"status": "done", "frames_scanned": 25, "frames_with_list": 24, "frames_speaking": 11, "count": 4,
+                      "kinds": ["panel"], "invited": ["Sam Lee"],
+                      "names": [{"name": n, "frames": 24, "first_seen": at, "last_seen": 24.0, "spoke": 0} for n, at in roster]})
+    return t
 
 
 def search_turn(system: str, user: str) -> str | None:
@@ -241,6 +268,20 @@ def make_ollama(state_file: Path) -> FastAPI:
         alerts.append({"type": "conflict", "text": "The budget was cut.", "line": mine, "sources": []})  # dropped
         return json.dumps({"alerts": alerts})
 
+    def review_reply(user: str) -> str:
+        """A model reviewing corrected lines: takes the other transcript's wording where it differs, and proposes one
+        invented sentence (the app must drop it: its words are in neither transcript)."""
+        changes = []
+        for n, _spk, text, others in re.findall(r"^#(\d+) \[([^\]]+)\] (.*)\n  Other transcripts:\n((?:    .*\n?)+)", user, re.M):
+            first = others.strip().splitlines()[0].split(": ", 1)[-1]
+            theirs = re.sub(r"\[[^\]]*:\]\s*", "", first).strip()
+            if theirs and theirs != text:
+                changes.append({"line": int(n), "text": theirs, "speaker": None, "reason": "the other transcript has it"})
+        if changes:
+            changes.append({"line": changes[0]["line"], "text": "We will escalate everything to the board.", "speaker": None,
+                            "reason": "invented"})
+        return json.dumps({"changes": changes})
+
     def reply_for(model: str, messages: list[dict]) -> tuple[str, float]:
         """Picks the fake answer from the prompt: speaker identification JSON, meeting notes (from the fixture),
         a tool call for 'Find …' messages, or an echo. Returns (text, seconds to wait between pieces).
@@ -254,6 +295,8 @@ def make_ollama(state_file: Path) -> FastAPI:
                 {"id": "SPEAKER_02", "name": None, "role": "Backend developer", "confidence": 0, "evidence": "talks about a fix"}]}), 0
         if "You check a meeting against earlier meetings" in system:
             return check_reply(user), 0.002
+        if "You check a meeting transcript made by speech recognition" in system:
+            return review_reply(user), 0
         if "You write professional meeting notes" in system:
             return notes_reply(user, model), 0.002
         if "Rewrite them as 3-5 bullets" in user:
@@ -430,10 +473,13 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
             "record_picker": False, "record_pick": "zoom",
             # Other transcripts of a meeting (corrections): sources per transcript, and the original segments.
             "refs": {}, "corr": {}, "ref_seconds": 1.5,
+            # Meetings whose recording moved (admin config `missing`): {tid: [candidate files found by name]}.
+            "missing": {},
         })
         requests_log.clear()
         fake_cloud.REQUESTS.clear()
         fake_cloud.REVIEW_PLAN["changes"] = {}
+        fake_cloud.SPELLING_PLAN["fixes"] = {}
         fake_mcp.reset()
         start_ollama()
 
@@ -477,6 +523,20 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
     def admin_requests():
         """GET /__admin/requests: which models were called (tests check routing with it)."""
         return requests_log
+
+    @app.post("/__admin/spelling-plan")
+    async def admin_spelling_plan(request: Request):
+        """POST /__admin/spelling-plan: words the fake cloud review's spelling step replaces ({"Owen": "Owain"})."""
+        fake_cloud.SPELLING_PLAN["fixes"] = (await request.json()).get("fixes", {})
+        return {"ok": True}
+
+    @app.post("/__admin/add-transcript")
+    async def admin_add_transcript(request: Request):
+        """POST /__admin/add-transcript {"fixture": "panel"}: adds an extra synthetic meeting."""
+        fixture = (await request.json()).get("fixture")
+        t = {"panel": panel_transcript}[fixture]()
+        mem["transcripts"][t["id"]] = t
+        return {"id": t["id"]}
 
     @app.post("/__admin/review-plan")
     async def admin_review_plan(request: Request):
@@ -628,7 +688,13 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
         if job["status"] in ("queued", "running"):
             elapsed = time.time() - job["created"]
             total = mem["job_seconds"]
-            if elapsed >= total:
+            if elapsed >= total and job.get("kind") == "screen":  # names read again: the review counts change
+                t = mem["transcripts"][job["transcript_id"]]
+                frames = (job.get("screen") or {}).get("vision_cap") or 12
+                t["screen_info"] = dict(t.get("screen_info") or {}, status="done", reviewed=frames, vision_frames=frames,
+                                        confirmed=frames - 2, corrected=1, filled=0, no_answer=1)
+                job.update(status="done", stage="done", progress=1.0, finished=time.time())
+            elif elapsed >= total:
                 tid = "t-" + uuid.uuid4().hex[:8]
                 t = standup_transcript()
                 t.update(id=tid, title=Path(job["path"]).stem, source_path=job["path"], source_name=job["name"],
@@ -640,7 +706,8 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
                 job.update(status="done", stage="done", progress=1.0, transcript_id=tid, finished=time.time())
             else:
                 frac = elapsed / total
-                stage = "starting" if frac < 0.1 else "transcribe" if frac < 0.8 else "diarize"
+                stage = ("screen" if job.get("kind") == "screen" else
+                         "starting" if frac < 0.1 else "transcribe" if frac < 0.8 else "diarize")
                 job.update(status="running", stage=stage, progress=round(min(0.99, frac), 3))
         out = {k: v for k, v in job.items() if k != "created"}
         out["elapsed"] = round(time.time() - job["created"])
@@ -658,6 +725,18 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
                             "stage": "queued", "progress": 0.0, "duration": 600.0, "created": time.time(),
                             "error": None, "transcript_id": None, "speakers": body.get("speakers"),
                             "models": body.get("models"), "screen": body.get("screen")}
+        return job_view(mem["jobs"][jid])
+
+    @app.post(T + "/transcripts/{tid}/screen-names")
+    async def t_screen_names(tid: str, request: Request):
+        """Fake transcriber: reads on-screen names again for a transcript (a job of kind screen)."""
+        if tid not in mem["transcripts"]:
+            raise HTTPException(404, "Unknown transcript.")
+        body = await request.json()
+        jid = uuid.uuid4().hex[:12]
+        mem["jobs"][jid] = {"id": jid, "path": f"/fake/{tid}.mov", "name": f"{tid}.mov", "status": "queued",
+                            "stage": "queued", "progress": 0.0, "duration": 600.0, "created": time.time(),
+                            "error": None, "transcript_id": tid, "kind": "screen", "screen": body.get("screen")}
         return job_view(mem["jobs"][jid])
 
     @app.get(T + "/jobs")
@@ -850,10 +929,18 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
         """Fake transcriber GET /transcripts/{id}."""
         return get_t(tid)
 
+    def corr_state(tid: str) -> dict:
+        state = mem["corr"].setdefault(tid, {"original": get_t(tid)["segments"], "reverted": [], "undone": False})
+        state.setdefault("layers", {})
+        state.setdefault("kept", [])
+        state.setdefault("ops", [])
+        return state
+
     def corr_apply(tid: str, reapply: bool = False) -> dict:
-        """The fake transcriber's correction: the real engine (transcriber/correct.py) on the fake meeting."""
+        """The fake transcriber's rebuild, as the real one: the real engine (transcriber/correct.py) with the other
+        transcripts, the models' fixes by source, then your edits (transcriber/edits.py)."""
         t = get_t(tid)
-        state = mem["corr"].setdefault(tid, {"original": t["segments"], "reverted": [], "undone": False})
+        state = corr_state(tid)
         if reapply:
             state["undone"] = False
         refs = mem["refs"].get(tid, [])
@@ -861,26 +948,110 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
             if ref["status"] == "transcribing" and time.time() >= ref["ready_at"]:
                 ref["status"] = "ready"
         ready = [r for r in refs if r["status"] == "ready"]
-        if not ready or state["undone"]:
-            t["segments"] = state["original"]
-            result = {"changes": [], "refs": [], "marks": {}, "names": {},
-                      "stats": {"words": 0, "turns": 0, "names": 0, "applied_refs": 0}}
+        layers = {k: v for k, v in state["layers"].items() if v and v.get("changes")}
+        fixed = set(t.get("confirmed_speakers") or {})
+        if ready and not state["undone"]:
+            result = correct.correct(state["original"], ready, None, [], fixed, set(state["reverted"]))
         else:
-            result = correct.correct(state["original"], ready, None, [], set(t.get("confirmed_speakers") or {}),
-                                     set(state["reverted"]))
-            t["segments"] = result["segments"]
+            result = {"segments": [dict(x) for x in state["original"]], "changes": [], "refs": [], "marks": {},
+                      "names": {}, "sentences": [], "stats": {"words": 0, "turns": 0, "names": 0, "applied_refs": 0}}
+        if not state["undone"]:
+            for source in ("review", "cloud_review"):
+                if source in layers:
+                    correct.apply_model_changes(result, layers[source], set(state["reverted"]), fixed)
+        final, origin, applied = transcript_edits.apply(result["segments"], state["ops"])
+        if state["ops"]:
+            new_index = {old: new for new, old in enumerate(origin) if old is not None}
+            result["marks"] = {str(new_index[int(k)]): v for k, v in result["marks"].items() if int(k) in new_index}
+            for item in result["changes"] + result.get("sentences", []):
+                if item.get("seg") is not None:
+                    item["seg"] = new_index.get(item["seg"])
+            t["edits"] = {"ops": state["ops"], "state": applied}
+        else:
+            t.pop("edits", None)
+        t["segments"] = final
+        t["speakers"] = list(dict.fromkeys(x["speaker"] for x in final))
         found = {r["id"]: r for r in result["refs"]}
         summary = lambda r: {k: r.get(k) for k in ("id", "name", "source", "kind", "status", "error", "created_at")}
         correction = {"refs": [dict(summary(r), **{k: v for k, v in found.get(r["id"], {}).items() if k != "name"})
                                for r in refs],
                       "changes": result["changes"], "marks": result["marks"], "names": result["names"],
-                      "stats": result["stats"], "reverted": state["reverted"], "known_terms": [],
+                      "sentences": result.get("sentences", []), "model": layers.get("review"), "layers": layers,
+                      "stats": result["stats"], "reverted": state["reverted"], "kept": state["kept"], "known_terms": [],
                       "undone": state["undone"], "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        if refs:
+        if refs or layers:
             t["correction"] = correction
         else:
             t.pop("correction", None)
         return correction
+
+    def edit_result(tid: str) -> dict:
+        t = get_t(tid)
+        return {"segments": t["segments"], "speakers": t["speakers"], "edits": t.get("edits") or {"ops": [], "state": {}},
+                "correction": t.get("correction")}
+
+    @app.post(T + "/transcripts/{tid}/edits")
+    async def t_add_edit(tid: str, request: Request):
+        """Fake transcriber POST …/edits: the real edit rules (transcriber/edits.py)."""
+        corr_state(tid)
+        try:
+            op = transcript_edits.make_op(get_t(tid)["segments"], await request.json())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        corr_state(tid)["ops"].append(op)
+        corr_apply(tid)
+        return dict(edit_result(tid), op=op)
+
+    @app.delete(T + "/transcripts/{tid}/edits/{op_id}")
+    def t_undo_edit(tid: str, op_id: str):
+        state = corr_state(tid)
+        state["ops"] = [o for o in state["ops"] if o["id"] != op_id]
+        corr_apply(tid)
+        return edit_result(tid)
+
+    @app.delete(T + "/transcripts/{tid}/edits")
+    def t_undo_edits(tid: str):
+        corr_state(tid)["ops"] = []
+        corr_apply(tid)
+        return edit_result(tid)
+
+    @app.post(T + "/transcripts/{tid}/voiceprints")
+    def t_voiceprints(tid: str):
+        """Fake transcriber: voice fingerprints made again from the current lines (done at once)."""
+        t = get_t(tid)
+        t["speaker_embeddings"] = {spk: [0.3, 0.3, 0.3] for spk in t["speakers"]}
+        return {"id": "vp-" + tid, "status": "done", "kind": "voiceprints", "transcript_id": tid, "progress": 1.0}
+
+    @app.delete(T + "/transcripts/{tid}/voiceprints")
+    def t_forget_voiceprints(tid: str):
+        t = get_t(tid)
+        return {"deleted": len(t.pop("speaker_embeddings", None) or {})}
+
+    @app.get(T + "/transcripts/{tid}/corrections/context")
+    def t_corr_context(tid: str):
+        """Fake transcriber GET …/corrections/context: the real line_context on the fake meeting."""
+        t = get_t(tid)
+        ready = [r for r in mem["refs"].get(tid, []) if r["status"] == "ready"]
+        return {"lines": correct.line_context(t["segments"], ready), "speakers": t.get("speakers") or [],
+                "fixed": sorted(t.get("confirmed_speakers") or {})}
+
+    @app.post(T + "/transcripts/{tid}/corrections/model")
+    async def t_corr_model(tid: str, request: Request):
+        """Fake transcriber POST …/corrections/model: keeps a source's fixes (review, cloud_review) and corrects again."""
+        body = await request.json()
+        source = body.get("source", "review")
+        changes = [dict(ch, id=correct.change_id(source, ch["line"], ch["line"] + 1,
+                                                 f"{ch.get('text') or ''}|{ch.get('speaker') or ''}"))
+                   for ch in body["changes"]]
+        corr_state(tid)["layers"][source] = {"model": body["model"], "label": body.get("label", ""), "changes": changes,
+                                             "source": source, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        return corr_apply(tid)
+
+    @app.delete(T + "/transcripts/{tid}/corrections/model")
+    def t_corr_model_clear(tid: str, source: str = "review"):
+        """Fake transcriber DELETE …/corrections/model?source=…"""
+        corr_state(tid)["layers"].pop(source, None)
+        return corr_apply(tid)
 
     def new_ref(source: str, name: str, kind: str) -> dict:
         rid = uuid.uuid4().hex[:8]
@@ -931,22 +1102,32 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
     @app.post(T + "/transcripts/{tid}/corrections/{action}")
     async def t_corrections(tid: str, action: str):
         if action == "undo":
-            mem["corr"].setdefault(tid, {"original": get_t(tid)["segments"], "reverted": [], "undone": False})["undone"] = True
+            corr_state(tid)["undone"] = True
             return corr_apply(tid)
         return corr_apply(tid, reapply=True)
 
     @app.post(T + "/transcripts/{tid}/corrections/{cid}/{action}")
     def t_correction_change(tid: str, cid: str, action: str):
-        state = mem["corr"][tid]
-        reverted = set(state["reverted"])
-        (reverted.add if action == "revert" else reverted.discard)(cid)
-        state["reverted"] = sorted(reverted)
+        state = corr_state(tid)
+        reverted, kept = set(state["reverted"]), set(state["kept"])
+        if action == "keep":
+            kept.add(cid)
+        else:
+            (reverted.add if action == "revert" else reverted.discard)(cid)
+            kept.discard(cid)
+        state["reverted"], state["kept"] = sorted(reverted), sorted(kept)
         return corr_apply(tid)
 
     def media_parts(t: dict) -> list[dict]:
         if t.get("confirmed_speakers"):
             return [{"part": "call", "label": "Call"}, {"part": "mic", "label": "You"}]
+        if is_video(t):
+            return []  # a video plays its own sound
         return [{"part": "audio", "label": "Sound"}]
+
+    def is_video(t: dict) -> bool:
+        """t-video is a video meeting; its "video" is a WAV tone (the test browser has no H.264)."""
+        return t.get("id") in ("t-video", "t-panel")
 
     @app.get(T + "/transcripts/{tid}/media")
     def t_media_info(tid: str):
@@ -955,8 +1136,36 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
         t = get_t(tid)
         if t.get("source_type") == "text":
             return {"available": False, "reason": "text", "message": "This transcript was imported from text."}
-        return {"available": True, "path": t.get("source_path"), "name": t.get("source_name"), "video": False,
+        if tid in mem["missing"]:
+            return {"available": False, "reason": "missing", "path": t.get("source_path"), "name": t.get("source_name"),
+                    "message": "The recording isn't where it was transcribed from any more."}
+        return {"available": True, "path": t.get("source_path"), "name": t.get("source_name"), "video": is_video(t),
                 "parts": media_parts(t), "duration": t.get("duration")}
+
+    @app.get(T + "/transcripts/{tid}/recording/candidates")
+    def t_recording_candidates(tid: str):
+        """Fake transcriber GET /transcripts/{id}/recording/candidates: the files set with admin `missing`."""
+        t = get_t(tid)
+        return {"candidates": mem["missing"].get(tid, []), "names": [t.get("source_name")],
+                "folders": ["Desktop", "Downloads", "Movies", "Documents", "watch folder", "uploads"],
+                "duration": t.get("duration")}
+
+    @app.post(T + "/transcripts/{tid}/recording")
+    async def t_relink(tid: str, request: Request):
+        """Fake transcriber POST /transcripts/{id}/recording: a matching candidate (cloned into uploads) or an
+        upload; an upload named "*other*" is "another length" (409)."""
+        t = get_t(tid)
+        path = (await request.json())["path"]
+        found = {c["path"]: c for c in mem["missing"].get(tid, [])}
+        if path in found and not found[path]["match"] or "other" in path:
+            raise HTTPException(409, f"This file is 0:09 long; the meeting is {int(t.get('duration') or 0) // 60}:"
+                                     f"{int(t.get('duration') or 0) % 60:02d}. It looks like a different recording.")
+        if path not in found and not path.startswith("/fake/Meetings/uploads/"):
+            raise HTTPException(400, "Choose one of the recordings found for this meeting, or upload it.")
+        copied = path in found
+        t["source_path"] = f"/fake/Meetings/uploads/{path.rsplit('/', 1)[-1]}" if copied else path
+        mem["missing"].pop(tid, None)
+        return {**t_media_info(tid), "linked": t["source_path"], "copied": copied}
 
     @app.get(T + "/transcripts/{tid}/media/{part}")
     def t_media_part(tid: str, part: str):
@@ -964,7 +1173,7 @@ def make_admin(state_file: Path, ollama_port: int) -> FastAPI:
         import math
         import wave
         t = get_t(tid)
-        if part not in {p["part"] for p in media_parts(t)}:
+        if part not in {p["part"] for p in media_parts(t)} | ({"video"} if is_video(t) else set()):
             raise HTTPException(404, "No such part.")
         path = state_file.parent / "media" / f"{tid}-{part}.wav"
         if not path.exists():

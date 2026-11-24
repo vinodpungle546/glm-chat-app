@@ -46,6 +46,10 @@ SCREEN_STRONG = 0.85    # the same name on the active tile across 3+ of their tu
 SCREEN_MEDIUM = 0.7     # seen twice, mostly this name
 SCREEN_ONCE = 0.45      # seen once
 SCREEN_VISION_CAP = 0.55        # read only by the vision model
+LIST_STRONG = 0.65              # the participants list marked this name while they talked, 5+ times, mostly this name
+LIST_MEDIUM = 0.55              # (medium at most: on real Teams calls the list marks the speaker faintly; it becomes
+LIST_WEAK = 0.35                #  strong only when the tile agrees at the same moment, SCREEN_BOTH)
+SCREEN_BOTH = 0.92              # the tile and the list agreed at the same moment
 SCREEN_SPEAKER_VIEW_CAP = 0.7   # read only from speaker view (no highlight border)
 SCREEN_CONFIRM_COUNT = 3        # automatic voice fingerprint: seen at least this often…
 SCREEN_CONFIRM_SHARE = 0.7      # …and this share of the speaker's named frames
@@ -137,9 +141,11 @@ def resolve_screen_name(name: str, truncated: bool, known_names: list[str]) -> s
 
 
 def screen_evidence(transcript: dict, known_names: list[str]) -> dict[str, dict[str, tuple[float, str, dict]]]:
-    """{speaker: {name: (probability, why, details)}} from the names seen on the active tile."""
+    """{speaker: {name: (probability, why, details)}} from the names seen on the active tile and the names the
+    call's participants list marked as speaking while this speaker talked. Tile and list agreeing raises it."""
     found = transcript.get("screen_names") or {}
-    top: dict[str, list[tuple[int, str]]] = defaultdict(list)  # name → [(count, speaker)]
+    known_names = list(known_names) + [e["name"] for e in ((transcript.get("participants") or {}).get("names") or [])]
+    top: dict[str, list[tuple[float, str]]] = defaultdict(list)  # name → [(score, speaker)]
     rows: dict[str, list[dict]] = {}
     for spk, info in found.items():
         names = []
@@ -148,28 +154,44 @@ def screen_evidence(transcript: dict, known_names: list[str]) -> dict[str, dict[
             names.append(dict(item, name=name))
         rows[spk] = names
         if names:
-            top[names[0]["name"].lower()].append((names[0]["count"], spk))
+            top[names[0]["name"].lower()].append((names[0]["count"] + names[0].get("list", 0) / 10, spk))
     out: dict[str, dict[str, tuple[float, str, dict]]] = defaultdict(dict)
     for spk, names in rows.items():
-        resolved = max(1, (found[spk] or {}).get("resolved") or sum(n["count"] for n in names))
+        info = found[spk] or {}
+        resolved = max(1, info.get("resolved") or sum(n["count"] for n in names))
+        list_frames = max(1, info.get("list_frames") or sum(n.get("list", 0) for n in names))
         for item in names[:3]:
             count, share = item["count"], item["count"] / resolved
-            p = SCREEN_STRONG if count >= 3 and share >= 0.7 else SCREEN_MEDIUM if count >= 2 and share >= 0.5 \
-                else SCREEN_ONCE if share >= 0.5 else SCREEN_ONCE * 0.6
-            text_read = item.get("ocr", 0) + item.get("speaker_view", 0)
-            if not text_read:
-                p = min(p, SCREEN_VISION_CAP)
-            elif not item.get("ocr"):
-                p = min(p, SCREEN_SPEAKER_VIEW_CAP)
+            listed, list_share, both = item.get("list", 0), item.get("list", 0) / list_frames, item.get("both", 0)
+            probs, why = [], []
+            if count:
+                p = SCREEN_STRONG if count >= 3 and share >= 0.7 else SCREEN_MEDIUM if count >= 2 and share >= 0.5 \
+                    else SCREEN_ONCE if share >= 0.5 else SCREEN_ONCE * 0.6
+                text_read = item.get("ocr", 0) + item.get("speaker_view", 0)
+                if not text_read:
+                    p = min(p, SCREEN_VISION_CAP)
+                elif not item.get("ocr"):
+                    p = min(p, SCREEN_SPEAKER_VIEW_CAP)
+                probs.append(p)
+                where = ("name on the active tile" if item.get("ocr") else "name under the main video"
+                         if item.get("speaker_view") else "name read by the local vision model")
+                why.append(f"{where} at {_fmt((item.get('times') or [0])[0])} (seen {count}×)")
+            if listed:
+                probs.append(LIST_STRONG if listed >= 5 and list_share >= 0.7 else LIST_MEDIUM
+                             if listed >= 3 and list_share >= 0.5 else LIST_WEAK if list_share >= 0.5 else LIST_WEAK * 0.6)
+                why.append(f"marked as speaking in the participants list ({listed} frame{'s' if listed != 1 else ''})")
+            if not probs:
+                continue
+            p = _noisy_or(probs)
+            if both:  # the tile and the list showed the same person at the same moment
+                p = max(p, SCREEN_BOTH)
+                why.append(f"tile and list agree ({both}×)")
             owners = top.get(item["name"].lower(), [])
             if len(owners) > 1 and max(owners)[1] != spk:  # the same name was top for another speaker
                 p *= 0.6
-            first = _fmt((item.get("times") or [0])[0])
-            where = ("name on the active tile" if item.get("ocr") else "name under the main video"
-                     if item.get("speaker_view") else "name read by the local vision model")
-            why = f"{where} at {first} (seen {count}×)"
-            out[spk][item["name"]] = (round(p, 3), why, {"count": count, "share": round(share, 2),
-                                                         "ocr": item.get("ocr", 0)})
+            out[spk][item["name"]] = (round(p, 3), "; ".join(why) if len(why) > 1 else why[0],
+                                      {"count": count, "share": round(share, 2), "ocr": item.get("ocr", 0),
+                                       "list": listed, "both": both})
     return out
 
 
@@ -516,6 +538,7 @@ def identify(transcript: dict, known: list[dict], facts: list[str], complete: Ca
     past = past or {}
     on_screen = [item["name"] for info in (transcript.get("screen_names") or {}).values()
                  for item in (info or {}).get("names", [])[:2] if not item.get("truncated")]
+    on_screen += [e["name"] for e in ((transcript.get("participants") or {}).get("names") or [])]
     names = list(dict.fromkeys(mentioned + in_text + [n for n in past if n in known_names] + on_screen))
     if progress:
         progress("Matching voices with people you labelled before…")

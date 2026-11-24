@@ -69,6 +69,8 @@ Env vars:
     - `memory/memory.json` (memory_store; `memory/backup-*/` from the one-time migration)
     - `cloud_providers.json` (no keys) and `connectors/` (connectors.json, stdio logs)
     - `speaker_labels/{tid}.review.json` (the cloud review: changes with pending/kept/reverted/edited)
+    - `speaker_labels/{tid}.participants.json` (the participants-list check: changes pending/kept/reverted/edited,
+      flagged names, suggestions) and `attendees/{tid}.json` (your attendee edits: added, removed, renamed)
     - `speaker_labels/{tid}.json`
     - `meeting_models/{tid}.json` (models picked later in the Speakers/Summary panels, `speaker_used`) and
       `meeting_models/jobs/{job_id}.json` (the "identify and summarise when transcription finishes" follow-up)
@@ -127,9 +129,42 @@ Env vars:
   single recording whose word is ≥ 0.8 sure and 0.15 surer than Quorum's. New transcripts keep Whisper's words
   (`TRANSCRIPTS_DIR/.words/<tid>.json`, `{word,start,end,p}`); older ones get times spread over each segment.
   `correction = {refs, changes (reverted ones listed with reverted: true), marks {seg: [[start, end, id]]}, names,
-  stats, reverted, undone}`. A PUT of new segments drops the correction. API (`after_correction`): clears the search
+  stats, reverted, kept, undone, layers}`. `apply_corrections` rebuilds: engine (ready refs) → model layers in
+  `LAYER_ORDER` (`review`, `cloud_review`; `POST/DELETE …/corrections/model` with `source`; works without refs) →
+  your edits (`transcriber/edits.py`: ops text/speaker/split/merge anchored by start time with an index hint,
+  `make_op` validates, applied last, stale when the line is gone; `POST/DELETE /transcripts/{id}/edits[/{op}]`;
+  marks and change `seg`s remapped through the edits). A PUT of new segments drops the correction. API (`after_correction`): clears the search
   cache entry, writes `source: "reference"` labels (never over user/microphone; `speaker_id.identify` keeps them),
   marks the summary `stale`. Web: `components/meetings/corrections.tsx` (dialog, Corrections tab, `MarkedText`).
+  Beyond words: a single reference inserts up to `MAX_SENTENCE_INSERT` and deletes up to `MAX_SINGLE_DELETE` inside
+  well-aligned sentences; sentence ends (`punct`; references keeping Quorum's punctuation vote to keep it); whole
+  lines go to another speaker (`speaker`: `SPEAKER_SHARE` of named words, never fixed speakers); `sentences`
+  summarises the changes per line ("By sentence" view). Model review: `correction_review.py` (API
+  `POST/DELETE /api/meetings/transcripts/{tid}/correction-review`, SSE; a cloud model asks once per meeting and
+  provider via `meeting_models/{tid}.json` `cloud_ok`; local projects refuse) over `correct.line_context` (transcriber
+  `GET …/corrections/context`, reference words mapped to lines word by word). Validated fixes (words only from the
+  line or its reference text, ≥ `KEEP_SHARE` of the line kept, real non-microphone speakers) are saved with
+  `POST …/corrections/model` and applied by `correct.apply_model_changes` only while the line still reads as
+  `before` (else `stale`).
+- **Participants list, attendees, your edits:**
+  - `participants_check.py` (pure): the last step of `/identify` (after the local pass, again after a done cloud
+    review): `match` (exact, accents, first name, cut short, sounds alike via `sound_key`; one candidate only),
+    `check` (list spelling with `previous`, source `participants`; `flag: not_in_list` ×0.7; `suggestions` for
+    unnamed speakers; names already listed exactly are claimed first, never two speakers per name; user/microphone
+    untouched). Reverted changes stay reverted on re-identify (`run_participants_check`). Keep/Revert:
+    `POST …/speakers/participants/{keep|revert|revert-all}`.
+  - `attendees.py` (pure): `build` = transcript `participants` rows + named speakers (linked by exact/accents/first
+    name/cut short) + your edits; `follow_speaker_rename` (PUT …/speakers renames the linked listed row);
+    `POST …/attendees {add|remove|rename}` (renaming someone who spoke renames the speaker; removing them is 409).
+    `get_transcript` adds `attendees`, `participants_check` and `edits` (descriptions). Notes (`meeting_meta`) add
+    attendees who didn't speak; the meeting check adds attendee names.
+  - Cloud review spelling (`speaker_review.spelling`, `check_fix`): before the names, same consent; fixes saved as
+    the transcriber's `cloud_review` correction layer (`run_cloud_spelling`), names then reviewed on the corrected
+    text; record `spelling`. `DELETE …/correction-review?source=cloud_review` = Revert all; `…/corrections/{id}/keep`.
+  - Your edits: `POST/DELETE …/edits[/{op}]` (a `name` without a speaker becomes a user label `SPEAKER_Uxx`;
+    `after_edit` clears search, drops unused U labels, marks the summary `stale`/`edited_after`; `voice_question`
+    when lines moved to a named person → `…/voiceprints/refresh` (backfill job) then `…/voiceprints/learn`).
+    `DELETE …/voiceprints` forgets one meeting's fingerprints (transcript + people memory); deleting a meeting does too.
 - **`sessions.py`**: chat JSON files (the original Streamlit app's format, plus `model_id`, `attachments`, `cloud_approved_reasons`, `custom_title`); `clean_title` tidies older titles.
 - **`speaker_id.py`**: names and roles with confidence. `screen_evidence` turns the transcript's `screen_names` into
   evidence (≈0.85 when seen 3+ times, weaker once or vision-only; truncated labels map to a known full name);
@@ -180,6 +215,7 @@ Env vars:
 - **Frontend (`web/src`):**
   - `components/app-provider.tsx` holds global state: models (polled), the selected model (localStorage plus `preferences`), sessions with search, the settings dialog and the sidebar.
   - Pages: `/` and `/c/[id]` (`ChatView`; the first message creates the session and uses `history.replaceState` so the view doesn't remount mid-stream; a question in `sessionStorage["quorum:ask:<id>"]` is sent once on load), `/meetings` (`NewMeeting` with the Record a call tab, `JobPanel` polling `?partial=true`, `MyActions`), `/meetings/[id]` (transcript, Speakers, Summary and Check panels).
+  - Player: `components/meetings/player.tsx` (`MeetingPlayer`, `playFrom` → `quorum:play`, `quorum:playing` marks the heard line; fullscreen, S/M/L size, captions from `lib/transcript-export.lines`; view in localStorage `quorum:player-view`). Copy/Download: `lib/transcript-export.ts` (plain, timed, Markdown, VTT, SRT, client-side) over transcriber `GET /transcripts/{id}/media[/{part}]` (call/mic tracks or a cached mix, Range; proxied by the API). `_recording_of` trusts the transcript's saved `source_path` (written by the service), so meetings keep playing after the watch folder changes. A moved recording: `FindRecording` → `GET /transcripts/{id}/recording/candidates` (same name in `HOME_FOLDERS` + meetings folders, `match` = same length ±max(2 s, 1%)) and `POST /transcripts/{id}/recording` (a candidate, cloned into uploads with `cp -c`, or an upload; another length → 409). `/recordings` maps a relinked copy to its transcript by `source_path`.
   - Recording: `components/meetings/recording.tsx` (`RecordTab`, `RecordingBar`, `RecordingIndicator` in the top bar, `LivePanel` docked by `AppShell`; `app-provider` polls `/api/meetings/record/status`, every 2 s while recording). Stop uses the New meeting choices saved in `sessionStorage` (`quorum:record-options`).
   - Meeting check: `lib/meeting-check.ts` (a small store per meeting, `runCheck` over SSE, `notify` = browser Notification with the count only) and `components/meetings/meeting-check.tsx` (`AlertsView`, `MeetingCheckRunner` for automatic checks during a call, `MyActions`).
   - Shared pieces: `components/settings/*` (tabbed dialog), `lib/api.ts` (fetch and SSE client, types).
@@ -223,7 +259,17 @@ Env vars:
 
 ### Transcriber additions
 On-screen names: `transcriber/screen_names.py` runs as the `screen` stage after diarization (video only; options per
-job `screen: {enabled, vision_model, vision_cap, debug}` from the API's prefs). Frames via ffmpeg, highlighted tile by
+job `screen: {enabled, vision_model, vision_cap, debug, participants}` from the API's prefs). It first scans the
+whole recording for the participants list (`transcriber/participants.py`: one frame a second in 5-minute ffmpeg
+chunks, OCR again only when the view changed; `find_panel` (heading, Invited section, role lines skipped) /
+`find_strip` (evenly spaced names at the right while sharing); `speaking` = the one row whose vivid-pixel share
+rises above its own median; `summarise` → transcript `participants` {names, invited, frames…}; `list_evidence` maps
+list speakers to diarized turns). `aggregate` counts per name `count` (tiles), `list`, `both`; conflicts carry
+`ocr`/`vision`/`list`; the vision prompt also asks for the list's speaker (`list_name`) when a frame shows the list.
+`speaker_id.screen_evidence` uses `LIST_*` and `SCREEN_BOTH`. Pref `participants_scan` (default on). The vision model always reviews
+(`pick_for_review`: every speaker, unsettled frames incl. `screen_share` first; `review_frame` → confirmed /
+corrected (both kept, `conflicts`) / filled / no_answer; `review_budget` = pref `vision_frames` or 4 per speaker,
+12–48; `screen_info.review_reason` when 0 reviewed). `vision_fallback`/`vision_cap` prefs are legacy. Frames via ffmpeg, highlighted tile by
 border colour (vivid, or white when the frame has little text), names via `transcriber/bin/quorum-ocr` (Swift +
 Vision, built by setup_local_ai.sh or on first use), unresolved frames to the local Ollama vision model with the
 on-screen labels as the only allowed answers. Results: `screen_names` + `screen_info` on the transcript. Follow-up job
@@ -301,7 +347,8 @@ Other pieces: slash-command skills (`turn_skill`); the built-in "Meeting minutes
 ## Testing notes
 
 - **Isolation (`tests/conftest.py`, autouse):** every test gets its own memory store, cloud-provider config and file
-  secrets; the memory migration can only read files inside the test's tmp_path. Never point tests at `data/`.
+  secrets; the memory migration can only read files inside the test's tmp_path; `api.main`'s `ATTENDEES_DIR`,
+  `LABELS_DIR` and `SUMMARIES_DIR` point at tmp_path (`no_real_meeting_files`). Never point tests at `data/`.
   `meetings.TRANSCRIBER_URL` and `llm_backends.GAIA_ENDPOINT` (except in test_cloud_regression) point at a closed
   port and `model_registry.capabilities` is stubbed, so tests never reach the real transcriber, GAIA or Ollama.
   E2E summaries answer the model dialog with `helpers.chooseSummaryModel`.
@@ -317,7 +364,10 @@ Other pieces: slash-command skills (`turn_skill`); the built-in "Meeting minutes
   Transcriber: `test_recording.py` (fake helper), `test_live.py` (synthetic PCM, fake Whisper/OCR). Pop-ups are
   tested by replacing `window.Notification` in the page.
 - **Synthetic video:** `transcriber/tests/synthetic_meeting.py` draws gallery calls (Pillow + ffmpeg; this ffmpeg has
-  no drawtext). The e2e transcript `t-video` carries `screen_names`.
+  no drawtext), modes `panel` / `panel_other` (participants panel with coloured avatars, ring or mic speaking marker,
+  Invited section) and `share_strip`. The e2e transcript `t-video` carries `screen_names`; `t-panel` (added with
+  `POST /__admin/add-transcript {"fixture": "panel"}`) carries `participants` and list counts.
+  `POST /__admin/spelling-plan` drives the fake cloud's spelling step (`fake_cloud.SPELLING_PLAN`).
 
 - **Web e2e (`web/e2e`):**
   - `helpers.resetAll` resets the mocks, chats, people, preferences and connectors before each test.

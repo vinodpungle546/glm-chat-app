@@ -12,6 +12,12 @@ test.beforeEach(async ({ request }) => resetAll(request));
 test("on-screen names explain the guess and teach the voice", async ({ page }) => {
   await open(page, "/meetings/t-video");
   await expect(page.getByTestId("screen-info")).toContainText("7 of 10 frames");
+  await expect(page.getByTestId("screen-review")).toHaveText(
+    "Reviewed by qwen3-vl:4b-instruct: 6 frames · 4 confirmed · 1 corrected · 0 filled in · 1 no clear speaker");
+  await expect(page.getByTestId("screen-conflicts")).toContainText("text reader “Mei Lin Chen”, vision model “Daniel Okafor”");
+  await expect(page.getByTestId("screen-conflict-play")).toHaveText("00:18");
+  // Names already read: the button stays, to read them again (e.g. after raising the frame count in Settings).
+  await expect(page.getByTestId("read-screen-names")).toHaveText("Read names from video again");
   await page.getByTestId("identify-speakers").click();
   const priya = page.locator('[data-speaker="SPEAKER_00"]');
   await expect(priya.getByTestId("speaker-name")).toHaveText("Priya Sharma");
@@ -109,3 +115,28 @@ test("notes use names kept from the review and memory", async ({ page, request }
   await expect(notes).not.toContainText("Zed");
 });
 
+
+test("reading names again shows its progress, then the new review counts", async ({ page, request }) => {
+  await request.post(`${ADMIN}/config`, { data: { job_seconds: 3 } });
+  await request.put(`${API}/api/preferences`, { data: { vision_frames: 30 } });
+  await open(page, "/meetings/t-video");
+  await page.getByTestId("read-screen-names").click();
+  await expect(page.getByTestId("screen-job-text")).toContainText(/Reading names from the video · \d+%/);
+  await expect(page.getByTestId("read-screen-names")).toBeDisabled();
+  await expect(page.getByText("Names read from the video")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("screen-job")).toHaveCount(0);
+  await expect(page.getByTestId("screen-review")).toContainText("30 frames · 28 confirmed · 1 corrected");
+  await expect(page.getByTestId("read-screen-names")).toHaveText("Read names from video again");
+});
+
+test("reading names again can be cancelled, and a running one is picked up on reload", async ({ page, request }) => {
+  await request.post(`${ADMIN}/config`, { data: { job_seconds: 30 } });
+  await open(page, "/meetings/t-video");
+  await page.getByTestId("read-screen-names").click();
+  await expect(page.getByTestId("screen-job")).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("screen-job")).toBeVisible();
+  await page.getByTestId("screen-job-cancel").click();
+  await expect(page.getByText("Stopped reading names from the video")).toBeVisible();
+  await expect(page.getByTestId("screen-job")).toHaveCount(0);
+});

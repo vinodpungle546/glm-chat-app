@@ -126,3 +126,45 @@ def test_new_speaker_segments_drop_a_correction_made_on_the_old_ones(client):
     c.put(f"/transcripts/{TID}/segments", json={"segments": segments, "speaker_names": {}, "speaker_source": "test"})
     t = c.get(f"/transcripts/{TID}").json()
     assert "before_correction" not in t and "correction" not in t
+
+
+def test_a_models_sentence_fixes_apply_on_top_revert_and_go_stale(client):
+    c, _config, _pipeline, _original = client
+    assert c.post(f"/transcripts/{TID}/corrections/model", json={"model": "m", "changes": []}).status_code == 409
+    c.post(f"/transcripts/{TID}/references", json={"source": "claude", "text": claude_text()})
+    segs = c.get(f"/transcripts/{TID}").json()["segments"]
+    line = next(i for i, s in enumerate(segs) if s["text"].startswith("Only the rollback"))
+    fixed = "Only the rollback plan is left, which Priya is writing this week."
+    body = {"model": "gemma4:e4b", "label": "Gemma 4 E4B", "changes": [
+        {"line": line, "before": segs[line]["text"], "text": fixed, "reason": "the memo says 'is left'"},
+        {"line": 0, "before": segs[0]["text"], "speaker": "SPEAKER_01", "speaker_name": "Owen Hart", "reason": "x"},
+        {"line": 2, "before": segs[2]["text"], "speaker": "SPEAKER_00", "reason": "never the microphone"},
+        {"line": 4, "before": "words the line no longer has", "text": "Other words.", "reason": "stale"}]}
+    assert c.post(f"/transcripts/{TID}/corrections/model", json={**body, "changes": [
+        {"line": 0, "before": "", "speaker": "SPEAKER_99"}]}).status_code == 400
+    correction = c.post(f"/transcripts/{TID}/corrections/model", json=body).json()
+    now = c.get(f"/transcripts/{TID}").json()["segments"]
+    assert now[line]["text"] == fixed and now[0]["speaker"] == "SPEAKER_01"
+    assert now[2]["speaker"] == "SPEAKER_02"  # your microphone's line is never moved
+    model = [ch for ch in correction["changes"] if ch["kind"] == "model"]
+    assert {ch.get("stale", False) for ch in model} == {False, True} and correction["stats"]["model_stale"] == 1
+    assert correction["model"]["label"] == "Gemma 4 E4B"
+    assert any(x["seg"] == line and x["after"] == fixed for x in correction["sentences"])
+    text_change = next(ch for ch in model if ch.get("seg") == line)
+    c.post(f"/transcripts/{TID}/corrections/{text_change['id']}/revert")
+    assert c.get(f"/transcripts/{TID}").json()["segments"][line]["text"] != fixed
+    c.post(f"/transcripts/{TID}/corrections/{text_change['id']}/restore")
+    assert c.get(f"/transcripts/{TID}").json()["segments"][line]["text"] == fixed
+    c.delete(f"/transcripts/{TID}/corrections/model")
+    assert c.get(f"/transcripts/{TID}").json()["segments"][line]["text"] != fixed
+
+
+def test_line_context_gives_each_line_the_other_transcripts_words(client):
+    c, _config, _pipeline, _original = client
+    names = "\n".join(f"{who}: {s['text']}" for (who, _), s in zip(SCRIPT, build(SCRIPT)[0]))
+    c.post(f"/transcripts/{TID}/references", json={"source": "other", "name": "Teams", "text": names})
+    ctx = c.get(f"/transcripts/{TID}/corrections/context").json()
+    assert ctx["fixed"] == ["SPEAKER_02"] and len(ctx["lines"]) == len(SCRIPT)
+    line = ctx["lines"][7]
+    assert line["refs"][0]["name"] == "Teams" and "Jira ticket" in line["refs"][0]["text"]
+    assert "[Priya Sharma:]" in line["refs"][0]["text"]

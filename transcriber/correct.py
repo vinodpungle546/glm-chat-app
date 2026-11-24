@@ -43,6 +43,13 @@ UNSURE = 0.5                # below this, a reference word wins a tie
 REF_SURE = 0.8              # a recording's word must be at least this sure to win a tie on its own
 SURER_BY = 0.15             # and this much surer than Quorum's word
 MAX_SINGLE_INSERT = 3       # words a single reference may add in one place
+MAX_SENTENCE_INSERT = 8     # ... or this many inside a sentence it lines up with well (SENTENCE_ALIGNED)
+SENTENCE_ALIGNED = 0.6      # share of a sentence's words a reference agrees with for sentence-level fixes
+MAX_SINGLE_DELETE = 3       # words a single reference may remove from a sentence it lines up with very well
+DELETE_ALIGNED = 0.8
+SPEAKER_SHARE = 0.8         # a line moves to another speaker when this share of its named words say so
+SPEAKER_MIN_WORDS = 4
+SENTENCE_END = ".?!"
 NAME_SHARE = 0.7            # a speaker gets a name when this share of their matched words carry it
 NAME_MIN_WORDS = 8
 TURN_WINDOW = 8             # words around a turn boundary looked at for moving it
@@ -306,6 +313,15 @@ def _well_aligned(agree: set[int], covered: list[bool], q1: int, q2: int) -> boo
     return bool(span) and sum(1 for i in span if i in agree) / len(span) >= WELL_ALIGNED
 
 
+def _sentence_ratio(v: dict, seg_ix: list[int], i: int) -> float:
+    """How much of the sentence (segment) around Quorum token `i` this reference agrees with (covered words)."""
+    if not 0 <= i < len(seg_ix):
+        return 0.0
+    seg = seg_ix[i]
+    span = [k for k in range(len(seg_ix)) if seg_ix[k] == seg and v["covered"][k]]
+    return sum(1 for k in span if k in v["agree"]) / len(span) if span else 0.0
+
+
 def _restyle(new: str, old: str) -> str:
     """The reference's word with Quorum's surrounding punctuation and sentence-start capital."""
     core = new.strip(_STRIP) or new
@@ -329,6 +345,7 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
     fixed_speakers = fixed_speakers or set()
     known = {norm(w) for term in (known_terms or []) for w in term.split() if len(norm(w)) >= 3}
     q = quorum_tokens(segments, words)
+    seg_ix = [t["seg"] for t in q]
     refs_out, groups = [], defaultdict(list)
     for ref in references:
         r = reference_tokens(ref)
@@ -354,6 +371,7 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
         sources: dict[tuple, list[str]] = defaultdict(list)
         display: dict[tuple, list[str]] = {}
         keep, single_ok, groups_here = 1.0, False, 0
+        sentence = 0.0  # how well the best reference here lines up with the whole sentence
         alt_p: dict[tuple, float] = {}  # how sure Whisper was of a reference's words (recordings only)
         for gname, views in groups.items():
             here = [v for v in views if all(v["covered"][i] for i in span)]
@@ -386,6 +404,8 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
                     alt_p[choice] = max(alt_p.get(choice, 0.0), min(ps))
                 if any(_well_aligned(v["agree"], v["covered"], q1, max(q2, q1 + 1)) for v in here):
                     single_ok = True
+                sentence = max([sentence] + [_sentence_ratio(v, seg_ix, q1 if q2 > q1 else max(0, q1 - 1))
+                                             for v in here])
         if not votes:
             continue
         alt, n = votes.most_common(1)[0]
@@ -400,9 +420,14 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
                 keep += 0.5
         if not alt:  # removing words
             invented = " ".join(old_norm) in HALLUCINATIONS
-            ok = (n >= 2 and score > keep) or invented
+            # One reference may remove a few extra words ("the the", a false start) inside a sentence it lines up
+            # with very well, unless Whisper was sure of them or they're a known name or term.
+            extra = (groups_here == 1 and single_ok and sentence >= DELETE_ALIGNED and len(old) <= MAX_SINGLE_DELETE
+                     and not any(t in known for t in old_norm) and not (p is not None and p >= SURE))
+            ok = (n >= 2 and score > keep) or invented or extra
         elif q1 == q2:  # adding words
-            ok = score > keep or (groups_here == 1 and single_ok and len(alt) <= MAX_SINGLE_INSERT)
+            limit = MAX_SENTENCE_INSERT if sentence >= SENTENCE_ALIGNED else MAX_SINGLE_INSERT
+            ok = score > keep or (groups_here == 1 and single_ok and len(alt) <= limit)
         elif score > keep:
             ok = True
         elif score == keep:
@@ -455,6 +480,18 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
                 new_text[i] = _restyle(" ".join(shown[k:]), q[i]["text"])
             else:
                 new_text[i] = _restyle(shown[k], q[i]["text"])
+        # A removed sentence start ("Pria. The the build" -> "Priya. the build"): the next word takes its capital.
+        for i in range(e["q1"], e["q2"]):
+            if new_text.get(i, "") is not None or not q[i]["text"][:1].isupper():
+                continue
+            prev = i - 1
+            starts = i == 0 or seg_ix[prev] != seg_ix[i] or (new_text.get(prev) or q[prev]["text"]).rstrip(
+                "\"'”’)").endswith(tuple(SENTENCE_END))
+            nxt = e["q2"]
+            if starts and nxt < len(q) and seg_ix[nxt] == seg_ix[i] and nxt not in new_text \
+                    and q[nxt]["text"][:1].islower():
+                new_text[nxt] = q[nxt]["text"][:1].upper() + q[nxt]["text"][1:]
+                cid_at[nxt] = e["id"]
 
     # Speakers: names from references with names, and turn boundaries off by a few words.
     owner = [segments[t["seg"]].get("speaker") for t in q]
@@ -511,6 +548,100 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
         for i in range(m["q1"], m["q2"]):
             seg_of[i] = m["to_seg"] if m["split"] < m["boundary"] else m["from_seg"]
 
+    # Whole lines given to the right speaker: a reference with names says (clearly) someone else said it, and
+    # that name belongs to another of Quorum's speakers. Never from or to your microphone or labels you set.
+    label_for: dict[str, list[str]] = defaultdict(list)
+    for spk, info in names.items():
+        label_for[info["name"]].append(spk)
+    named_refs = sorted({v["ref"].get("name") or v["ref"]["id"] for views in groups.values() for v in views
+                         if any(t["name"] for t in v["r"])})
+    speaker_of: dict[int, str] = {}
+    reassigned = []
+    for si, seg in enumerate(segments):
+        idx = [i for i in range(len(q)) if seg_of[i] == si]
+        said = Counter(name_at[i] for i in idx if i in name_at)
+        if sum(said.values()) < SPEAKER_MIN_WORDS:
+            continue
+        name, n = said.most_common(1)[0]
+        old_spk = seg.get("speaker")
+        targets = label_for.get(name, [])
+        if n / sum(said.values()) < SPEAKER_SHARE or len(targets) != 1 or targets[0] == old_spk:
+            continue
+        new_spk = targets[0]
+        if old_spk in fixed_speakers or new_spk in fixed_speakers:
+            continue
+        cid = change_id("speaker", si, si + 1, new_spk)
+        entry = {"id": cid, "kind": "speaker", "seg_src": si, "from_label": old_spk, "label": new_spk,
+                 "from": (names.get(old_spk) or {}).get("name") or old_spk, "to": name, "sources": named_refs,
+                 "t": float(seg.get("start", 0)), "text": seg.get("text", "")}
+        if cid in reverted:
+            skipped.append({**entry, "q1": idx[0], "q2": idx[0]})
+            continue
+        speaker_of[si] = new_spk
+        reassigned.append(entry)
+
+    # Sentence ends: a reference that lines up well with a sentence splits or joins it where it ends a sentence
+    # (".", "?", "!") and Quorum doesn't, or the other way round; its punctuation and the next word's capital.
+    punct = []
+    votes_at: dict[int, Counter] = defaultdict(Counter)
+    shown_at: dict[tuple[int, tuple], tuple[str, str]] = {}
+    srcs_at: dict[int, set] = defaultdict(set)
+    for views in groups.values():
+        choice_here: dict[int, set] = defaultdict(set)
+        for v in views:
+            for tag, q1, q2, r1, r2 in v["aligned"]["ops"]:
+                if tag != "equal" or q2 - q1 != r2 - r1:
+                    continue
+                for k in range(q2 - q1 - 1):  # the word and the next one, both lined up
+                    i, j = q1 + k, r1 + k
+                    if seg_ix[i] != seg_ix[i + 1] or i in cid_at or i + 1 in cid_at:
+                        continue
+                    q_end = q[i]["text"].rstrip("\"'”’)").endswith(tuple(SENTENCE_END))
+                    r_text, r_next = v["r"][j]["text"], v["r"][j + 1]["text"]
+                    r_end = r_text.rstrip("\"'”’)").endswith(tuple(SENTENCE_END))
+                    if q_end == r_end:
+                        choice_here[i].add("keep")
+                        continue
+                    if not _well_aligned(v["agree"], v["covered"], i, i + 1) \
+                            or _sentence_ratio(v, seg_ix, i) < SENTENCE_ALIGNED:
+                        continue
+                    trail = r_text[len(r_text.rstrip(_STRIP)):]
+                    first = r_next.lstrip(_STRIP)[:1]
+                    key = (trail, first.isupper())
+                    choice_here[i].add(key)
+                    shown_at[(i, key)] = (trail, first)
+                    srcs_at[i].add(v["ref"].get("name") or v["ref"]["id"])
+        for i, keys in choice_here.items():
+            if len(keys) == 1:  # the group's references agree
+                votes_at[i][keys.pop()] += 1
+    for i, counter in sorted(votes_at.items()):
+        keep = counter.pop("keep", 0)  # references that end (or don't end) the sentence where Quorum does
+        if not counter:
+            continue
+        key, n = counter.most_common(1)[0]
+        if n <= keep or n <= sum(counter.values()) - n:
+            continue
+        trail, first = shown_at[(i, key)]
+        core = q[i]["text"].rstrip(_STRIP)
+        lead_next = q[i + 1]["text"]
+        stripped = lead_next.lstrip(_STRIP)
+        prefix = lead_next[: len(lead_next) - len(stripped)]
+        if not stripped:
+            continue
+        nxt = stripped[:1].upper() + stripped[1:] if first.isupper() else (
+            stripped[:1].lower() + stripped[1:] if norm(stripped) not in known and stripped[:2] != "I " and stripped != "I" else stripped)
+        new_a, new_b = core + trail, prefix + nxt
+        if new_a == q[i]["text"] and new_b == lead_next:
+            continue
+        cid = change_id("punct", i, i + 2, new_a + " " + new_b)
+        entry = {"id": cid, "kind": "punct", "q1": i, "q2": i + 2, "to": f"{new_a} {new_b}", "sources": sorted(srcs_at[i])}
+        if cid in reverted:
+            skipped.append(entry)
+            continue
+        new_text[i], new_text[i + 1] = new_a, new_b
+        cid_at[i] = cid_at[i + 1] = cid
+        punct.append(entry)
+
     # Rebuild the segments (same order, speakers and times; empty ones dropped) and where each change landed.
     built: dict[int, list[tuple[str, str | None]]] = defaultdict(list)
     times: dict[int, list[float]] = defaultdict(list)
@@ -539,6 +670,8 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
             if cid:
                 spans.append([start, len(text), cid])
         new_seg = dict(seg, text=text)
+        if si in speaker_of:
+            new_seg["speaker"] = speaker_of[si]
         moved = [m for m in moves if si in (m["from_seg"], m["to_seg"])]
         if moved and times.get(si):
             new_seg["start"] = round(min(times[si]), 2) if any(m["to_seg"] == si and m["split"] < m["boundary"] for m in moved) else seg["start"]
@@ -561,14 +694,131 @@ def correct(segments: list[dict], references: list[dict], words: list[dict] | No
         changes.append({"id": m["id"], "kind": "turn", "from": " ".join(q[i]["text"] for i in range(m["q1"], m["q2"])),
                         "to": m["to"], "sources": [], "seg": new_index.get(m["to_seg"]), "t": q[m["q1"]]["t"],
                         "name_or_number": False})
+    for e in punct:
+        changes.append({"id": e["id"], "kind": "punct", "from": " ".join(q[i]["text"] for i in range(e["q1"], e["q2"])),
+                        "to": e["to"], "sources": e["sources"], "seg": new_index.get(seg_of[e["q1"]]),
+                        "t": q[e["q1"]]["t"], "name_or_number": False})
+    for e in reassigned:
+        changes.append({"id": e["id"], "kind": "speaker", "from": e["from"], "to": e["to"], "label": e["label"],
+                        "from_label": e["from_label"], "sources": e["sources"], "seg": new_index.get(e["seg_src"]),
+                        "t": e["t"], "text": e["text"][:200], "name_or_number": True})
     for e in skipped:  # reverted by you: listed so they can be brought back
-        changes.append({"id": e["id"], "kind": e["kind"], "from": " ".join(q[i]["text"] for i in range(e["q1"], e["q2"])),
-                        "to": e["to"], "sources": e["sources"], "seg": None, "reverted": True,
-                        "t": q[min(e["q1"], len(q) - 1)]["t"] if q else 0, "name_or_number": False})
+        old = e["from"] if e["kind"] == "speaker" else " ".join(q[i]["text"] for i in range(e["q1"], e["q2"]))
+        changes.append({"id": e["id"], "kind": e["kind"], "from": old, "to": e["to"], "sources": e["sources"],
+                        "seg": None, "reverted": True, "t": e.get("t", q[min(e["q1"], len(q) - 1)]["t"] if q else 0),
+                        "name_or_number": False, **({"label": e["label"], "from_label": e["from_label"],
+                                                     "text": e["text"][:200]} if e["kind"] == "speaker" else {})})
     changes.sort(key=lambda c: c["t"])
     words_changed = sum(max(1, len(c["from"].split())) if c["kind"] == "word" else
                         len(c["to"].split()) if c["kind"] == "insert" else len(c["from"].split())
-                        for c in changes if c["kind"] != "turn" and not c.get("reverted"))
+                        for c in changes if c["kind"] in ("word", "insert", "delete") and not c.get("reverted"))
+    # Per sentence (line): what it said and says now, with its changes, so the panel can show whole sentences.
+    by_seg: dict[int, list[dict]] = defaultdict(list)
+    for c in changes:
+        if c.get("seg") is not None and not c.get("reverted"):
+            by_seg[c["seg"]].append(c)
+    src_of = {v: k for k, v in new_index.items()}
+    sentences = []
+    for idx, cs in sorted(by_seg.items()):
+        src = segments[src_of[idx]]
+        speaker = next((c for c in cs if c["kind"] == "speaker"), None)
+        sentences.append({"seg": idx, "before": src.get("text", ""), "after": out[idx]["text"],
+                          "ids": [c["id"] for c in cs], "t": float(out[idx].get("start", 0)),
+                          "speaker_from": speaker["from"] if speaker else None,
+                          "speaker_to": speaker["to"] if speaker else None,
+                          "sources": sorted({s for c in cs for s in c.get("sources", [])})})
     return {"segments": out, "changes": changes, "refs": refs_out, "marks": marks, "names": names,
+            "sentences": sentences,
             "stats": {"words": words_changed, "turns": len(moves), "names": len(names),
+                      "speakers": len(reassigned), "sentences": len(punct),
                       "applied_refs": sum(1 for r in refs_out if r["applied"])}}
+
+
+def line_context(segments: list[dict], references: list[dict], max_chars: int = 600) -> list[dict]:
+    """What the other transcripts say for each line (for a model reviewing the corrected transcript):
+    [{line, speaker, text, refs: [{name, text}]}]. Only references that match the meeting are used; a reference's
+    excerpt is the stretch of its words lined up with the line (with speaker names when it has them)."""
+    q = quorum_tokens(segments)
+    seg_ix = [t["seg"] for t in q]
+    excerpts: dict[int, list[dict]] = defaultdict(list)
+    for ref in references:
+        r = reference_tokens(ref)
+        aligned = align(q, r)
+        if aligned["coverage"] < MIN_COVERAGE or aligned["anchors"] < min_anchors(len(q)):
+            continue
+        span: dict[int, list[int]] = {}
+
+        def put(si: int, j1: int, j2: int) -> None:
+            lo, hi = span.get(si, [j1, j2])
+            span[si] = [min(lo, j1), max(hi, j2)]
+
+        for _tag, q1, q2, r1, r2 in aligned["ops"]:
+            if r2 <= r1:
+                continue
+            if q2 - q1 == r2 - r1:  # word for word: each word goes with its own line (stretches cross lines)
+                for k in range(q2 - q1):
+                    put(seg_ix[q1 + k], r1 + k, r1 + k + 1)
+                continue
+            si = seg_ix[q1] if q1 < len(q) else seg_ix[-1]
+            if q2 == q1 and q1 > 0:
+                si = seg_ix[q1 - 1]
+            put(si, r1, r2)
+        for si, (lo, hi) in span.items():
+            words, last = [], None
+            for j in range(lo, hi):
+                name = r[j].get("name")
+                if name and name != last:
+                    words.append(f"[{name}:]")
+                    last = name
+                words.append(r[j]["text"])
+            excerpts[si].append({"name": ref.get("name") or ref["id"], "text": " ".join(words)[:max_chars]})
+    return [{"line": i, "speaker": s.get("speaker"), "text": s.get("text", ""), "refs": excerpts.get(i, [])}
+            for i, s in enumerate(segments)]
+
+
+def apply_model_changes(result: dict, model: dict | None, reverted: set[str], fixed: set[str]) -> None:
+    """Adds a model's sentence fixes (made in the app with a chosen model, see POST …/corrections/model) on top of
+    the engine's corrections. Each one applies only while its line still reads as the model saw it (`before`);
+    otherwise it is listed as stale. Never touches the microphone speaker."""
+    if not model or not model.get("changes"):
+        return
+    segs = result["segments"]
+    stale = 0
+    for ch in model["changes"]:
+        cid = ch["id"]
+        i = ch.get("line")
+        entry = {"id": cid, "kind": "model", "from": ch.get("before", ""), "to": ch.get("text") or ch.get("before", ""),
+                 "sources": [model.get("label") or model.get("model", "model")], "reason": ch.get("reason", ""),
+                 "t": float(segs[i]["start"]) if isinstance(i, int) and 0 <= i < len(segs) else 0.0,
+                 "name_or_number": False, "model": model.get("model", ""), "layer": model.get("source", "review")}
+        if ch.get("speaker"):
+            entry.update(label=ch["speaker"], speaker_to=ch.get("speaker_name") or ch["speaker"])
+        if not isinstance(i, int) or not 0 <= i < len(segs) or segs[i].get("text", "") != ch.get("before", ""):
+            stale += 1
+            result["changes"].append({**entry, "seg": None, "stale": True})
+            continue
+        if cid in reverted:
+            result["changes"].append({**entry, "seg": None, "reverted": True})
+            continue
+        if ch.get("speaker") and (segs[i].get("speaker") in fixed or ch["speaker"] in fixed):
+            continue
+        new = dict(segs[i])
+        if ch.get("text"):
+            new["text"] = ch["text"]
+            result["marks"][str(i)] = [[0, len(ch["text"]), cid]]
+        if ch.get("speaker"):
+            new["speaker"] = ch["speaker"]
+        segs[i] = new
+        result["changes"].append({**entry, "seg": i})
+        sentence = next((x for x in result.setdefault("sentences", []) if x["seg"] == i), None)
+        if sentence:
+            sentence.update(after=new["text"], ids=sentence["ids"] + [cid])
+        else:
+            result["sentences"].append({"seg": i, "before": ch.get("before", ""), "after": new["text"], "ids": [cid],
+                                        "t": float(new.get("start", 0)), "speaker_from": None,
+                                        "speaker_to": ch.get("speaker_name") if ch.get("speaker") else None,
+                                        "sources": entry["sources"]})
+    result["changes"].sort(key=lambda c: c.get("t", 0))
+    result["sentences"].sort(key=lambda x: x["seg"])
+    result["stats"]["model"] = sum(1 for c in result["changes"] if c["kind"] == "model" and c.get("seg") is not None)
+    result["stats"]["model_stale"] = stale

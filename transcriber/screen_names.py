@@ -5,9 +5,17 @@ around the tile of whoever is talking. For each diarized speaker we sample a few
 the start of their turns, find the highlighted tile and read its name label with Apple's
 on-device text recognition (transcriber/ocr/quorum_ocr.swift, Vision framework).
 
-Frames the text reader can't settle (no highlight found, or several highlighted tiles) may
-go to a local Ollama vision model, which is asked only to read the name label. It's never
-asked about faces. Frames never leave the Mac.
+Before that, the whole recording is scanned for the call's participants list (transcriber/participants.py): it
+gives the attendees and, where the list marks who is talking, a second source for each speaker's name (counted as
+`list` next to the tiles, agreements as `both`, disagreements as conflicts). Its full names complete names cut short
+on tiles and limit the names the vision model may answer with.
+
+Then a local Ollama vision model reviews frames of every speaker (compulsory, not a fallback):
+it confirms what the text reader found, corrects it (both are kept as evidence, the conflict is
+recorded) or fills in a name the text reader missed. Frames marked "screen share" are reviewed too:
+a Teams window with a chat or side panel open has lots of text, and its thin speaking outline is
+often missed by the tile detector. The model only reads name labels, never faces, and may only
+answer with a label the text reader saw in that frame. Frames never leave the Mac.
 
 Runs after Whisper and pyannote have finished and released their memory. The result is
 saved on the transcript as `screen_names` (per speaker label: names seen, counts, times)
@@ -29,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from transcriber import config
+from transcriber import config, participants
 
 log = logging.getLogger(__name__)
 
@@ -41,10 +49,13 @@ PER_SPEAKER_TURNS = 10        # turns sampled per speaker
 MAX_FRAMES = 240              # per meeting
 MIN_TURN_SECONDS = 1.5        # shorter turns: the highlight may still be on the previous speaker
 FRAME_WIDTH = 1280
-VISION_CAP = 12               # vision-model frames per meeting (default)
+VISION_CAP = 12               # vision-model frames per meeting when a number is set (older default)
+REVIEW_PER_SPEAKER = 4        # frames the vision model reviews per speaker ("auto" budget)
+REVIEW_MIN, REVIEW_MAX = 12, 48
 SECONDS_PER_FRAME = 0.35      # extract + OCR, measured on the M4 Air
 SECONDS_PER_VISION_FRAME = 9.0  # Qwen3-VL 4B on the M4 Air (benchmark_vision_models.py)
 SCREEN_SHARE_LINES = 14       # this much text and no tiles: a shared screen fills the view
+SCAN_SECONDS_PER_FRAME = 0.12  # participants scan: extract + colour per frame, text only when the view changed
 
 # Labels the meeting apps add to names, and words that are UI, not people.
 _SUFFIX = re.compile(r"\s*(?:\((?:guest|external|unverified|host|co-host|organi[sz]er|presenter|you|me|"
@@ -223,6 +234,10 @@ class FrameResult:
     truncated: bool = False
     tiles: list = field(default_factory=list)
     path: str = ""
+    review: str = ""                  # vision review: confirmed | corrected | filled | no_answer
+    vision_name: str = ""             # the vision model's name when it differs from the text reader's
+    list_name: str = ""               # the participants list's speaker at this moment
+    list_by_vision: bool = False      # …read by the vision model (not found by the scan)
 
 
 def read_frame(rgb, lines: list[dict]) -> tuple[str, tuple[str, bool] | None, list]:
@@ -281,47 +296,112 @@ def estimate_frames(duration: float) -> int:
     return int(min(MAX_FRAMES, max(4, duration / 15)))
 
 
-def estimate_seconds(duration: float, vision_cap: int = 0, vision_seconds: float | None = None) -> dict:
-    """`vision_seconds`: the chosen vision model's time per frame (default: Qwen3-VL 4B's)."""
+def review_budget(speakers: int, setting: int | None = None) -> int:
+    """Frames the vision model reviews: a number from Settings, else 4 per speaker (12 to 48)."""
+    if setting:
+        return int(setting)
+    return max(REVIEW_MIN, min(REVIEW_MAX, REVIEW_PER_SPEAKER * max(1, speakers)))
+
+
+def estimate_seconds(duration: float, vision_cap: int = 0, vision_seconds: float | None = None,
+                     scan: bool = True) -> dict:
+    """`vision_seconds`: the chosen vision model's time per frame (default: Qwen3-VL 4B's); `scan`: the whole
+    recording is scanned for the participants list (one frame a second)."""
     frames = estimate_frames(duration)
-    low = frames * SECONDS_PER_FRAME
+    low = frames * SECONDS_PER_FRAME + (duration / participants.SCAN_EVERY * SCAN_SECONDS_PER_FRAME if scan else 0)
     per_frame = vision_seconds or SECONDS_PER_VISION_FRAME
     return {"frames": frames, "low": round(low), "high": round(low * 1.5 + vision_cap * per_frame)}
 
 
-def aggregate(results: Iterable[FrameResult]) -> dict[str, dict]:
-    """Per speaker: the names seen (truncated labels folded into the full name), with counts."""
+def _entry(name: str, truncated: bool = False) -> dict:
+    return {"name": name, "count": 0, "times": [], "truncated": truncated, "ocr": 0, "speaker_view": 0, "vision": 0,
+            "list": 0, "both": 0}
+
+
+def aggregate(results: Iterable[FrameResult], listed: dict[str, Counter] | None = None,
+              list_names: list[str] | None = None) -> dict[str, dict]:
+    """Per speaker: the names seen (truncated labels folded into the full name, spellings that differ only in
+    accents merged), with counts: `count` frames read on tiles (text reader, speaker view or vision model), `list`
+    frames where the participants list marked them as speaking, `both` sampled frames where tile and list agreed.
+    `listed`: {speaker: Counter(name)} from the participants list scan; `list_names`: its full names."""
+    listed = listed or {}
     seen: dict[str, dict[str, dict]] = defaultdict(dict)
     frames: Counter = Counter()
     resolved: Counter = Counter()
+    conflicts: dict[str, list] = defaultdict(list)
+
+    def add(spk: str, name: str, status: str, truncated: bool, t: float, confirmed: bool = False) -> dict:
+        entry = seen[spk].setdefault(name, _entry(name, truncated))
+        entry["count"] += 1
+        entry[status] = entry.get(status, 0) + 1
+        if confirmed:
+            entry["confirmed"] = entry.get("confirmed", 0) + 1
+        entry["truncated"] = entry["truncated"] and truncated
+        if len(entry["times"]) < 12:
+            entry["times"].append(t)
+        return entry
+
+    def conflict(spk: str, item: dict) -> None:
+        if len(conflicts[spk]) < 10:
+            conflicts[spk].append(item)
+
     for r in results:
         frames[r.speaker] += 1
-        if not r.name:
-            continue
-        resolved[r.speaker] += 1
-        entry = seen[r.speaker].setdefault(r.name, {"name": r.name, "count": 0, "times": [], "truncated": r.truncated,
-                                                    "ocr": 0, "speaker_view": 0, "vision": 0})
-        entry["count"] += 1
-        entry[r.status] = entry.get(r.status, 0) + 1
-        entry["truncated"] = entry["truncated"] and r.truncated
-        if len(entry["times"]) < 12:
-            entry["times"].append(r.t)
+        if r.name or r.vision_name:
+            resolved[r.speaker] += 1
+        if r.name:
+            entry = add(r.speaker, r.name, r.status, r.truncated, r.t, confirmed=r.review == "confirmed")
+            if r.list_name and (participants.fold(r.list_name) == participants.fold(r.name)
+                                or same_person(r.name, r.list_name)):
+                entry["both"] += 1
+            elif r.list_name:  # the tile and the list name different people at this moment
+                conflict(r.speaker, {"t": r.t, ("vision" if r.status == "vision" else "ocr"): r.name, "list": r.list_name})
+        if r.vision_name:  # the vision model saw someone else: both stay as evidence
+            add(r.speaker, r.vision_name, "vision", False, r.t)
+            conflict(r.speaker, {"t": r.t, "ocr": r.name, "vision": r.vision_name})
+        if r.list_by_vision and r.list_name:  # the vision model read the list's speaker (the scan didn't)
+            seen[r.speaker].setdefault(r.list_name, _entry(r.list_name))["list"] += 1
+    list_total: Counter = Counter()
+    for spk, names in listed.items():
+        for name, c in names.items():
+            seen[spk].setdefault(name, _entry(name))["list"] += c
+            list_total[spk] += c
+    for spk in list(seen):  # spellings that differ only in accents or case: one entry
+        groups: dict[str, list[str]] = defaultdict(list)
+        for name in seen[spk]:
+            groups[participants.fold(name)].append(name)
+        for spellings in groups.values():
+            if len(spellings) < 2:
+                continue
+            best = participants.best_spelling(spellings, Counter({n: seen[spk][n]["count"] for n in spellings}))
+            target = seen[spk][best]
+            for other in spellings:
+                if other != best:
+                    _fold_into(target, seen[spk].pop(other))
     out: dict[str, dict] = {}
-    all_full = {n for names in seen.values() for n, e in names.items() if not e["truncated"]}
-    for spk in frames:
+    all_full = {n for names in seen.values() for n, e in names.items() if not e["truncated"]} | set(list_names or [])
+    for spk in set(frames) | set(seen):
         names = seen.get(spk, {})
         for short in [n for n, e in names.items() if e["truncated"]]:
             full = sorted(f for f in all_full if same_person(short, f))
             if len(full) == 1:
-                target = names.setdefault(full[0], {"name": full[0], "count": 0, "times": [], "truncated": False,
-                                                    "ocr": 0, "speaker_view": 0, "vision": 0})
-                src = names.pop(short)
-                for key in ("count", "ocr", "speaker_view", "vision"):
-                    target[key] += src[key]
-                target["times"] = sorted(target["times"] + src["times"])[:12]
-        ranked = sorted(names.values(), key=lambda e: -e["count"])
+                _fold_into(names.setdefault(full[0], _entry(full[0])), names.pop(short))
+        tile_frames, list_frames = max(1, frames[spk]), max(1, list_total[spk])
+        ranked = sorted(names.values(), key=lambda e: -(e["count"] / tile_frames + e.get("list", 0) / list_frames))
         out[spk] = {"names": ranked, "frames": frames[spk], "resolved": resolved[spk]}
+        if list_total[spk]:
+            out[spk]["list_frames"] = list_total[spk]
+        if conflicts.get(spk):
+            out[spk]["conflicts"] = conflicts[spk]
     return out
+
+
+def _fold_into(target: dict, src: dict) -> None:
+    """Adds one name entry's counts and times to another (a cut-off or differently accented spelling)."""
+    for key in ("count", "ocr", "speaker_view", "vision", "confirmed", "list", "both"):
+        if key in src:
+            target[key] = target.get(key, 0) + src[key]
+    target["times"] = sorted(target["times"] + src["times"])[:12]
 
 
 def fmt_time(seconds: float) -> str:
@@ -390,40 +470,63 @@ VISION_PROMPT = (
     "This is one frame from a video-call recording (for example Microsoft Teams or Zoom). "
     "Only read text in the image. Do not describe, recognise or identify anyone's face or appearance.\n"
     "1. Does a shared screen or presentation fill most of the view? \n"
-    "2. Is exactly one participant tile highlighted as the active speaker (a coloured border around it)?\n"
+    "2. Is exactly one participant tile highlighted as the active speaker? Apps mark the person talking with a "
+    "coloured or white outline around their tile or thumbnail (in Teams often a thin purple, blue or white rounded "
+    "border), a glow, or a ring around their picture or initials.\n"
     "3. If so, what is the name label written on that highlighted tile, exactly as shown?\n"
     'Reply with JSON only: {"screen_share": true or false, "highlighted": true or false, '
     '"name": "the label text" or null}'
 )
 
 
-def vision_prompt(candidates: list[str]) -> str:
-    """The question for one frame; with the labels the text reader found, the model only picks one."""
-    if not candidates:
+def vision_prompt(candidates: list[str], panel_names: list[str] | None = None) -> str:
+    """The question for one frame; with the labels the text reader found (and the participants list's names), the
+    model only picks one of them. `panel_names`: the frame shows a participants list with these names; the model
+    is also asked which of them the list marks as speaking."""
+    if not candidates and not panel_names:
         return VISION_PROMPT
-    return (VISION_PROMPT.rsplit("\nReply", 1)[0]
-            + "\nThe name labels visible in this frame are: " + "; ".join(candidates)
-            + ". If a tile is highlighted, the name must be one of these, written exactly as listed."
-            + '\nReply with JSON only: {"screen_share": true or false, "highlighted": true or false, '
-              '"name": "one of the listed names" or null}')
+    text = VISION_PROMPT.rsplit("\nReply", 1)[0]
+    if candidates:
+        text += ("\nThe name labels visible in this frame are: " + "; ".join(candidates)
+                 + ". If a tile is highlighted, the name must be one of these, written exactly as listed.")
+    fields = '"screen_share": true or false, "highlighted": true or false, "name": ' + (
+        '"one of the listed names" or null' if candidates else '"the label text" or null')
+    if panel_names:
+        text += ("\n4. The frame also shows the call's participants list: " + "; ".join(panel_names) + ". Does the "
+                 "list mark one of them as speaking (a ring around their picture, a highlighted row, or a lit or moving "
+                 "microphone icon)? If so, which one, written exactly as listed?")
+        fields += ', "list_name": "one of the participants" or null'
+    return text + "\nReply with JSON only: {" + fields + "}"
 
 
 def ask_vision(model: str, image: Path, ollama_url: str | None = None, timeout: float = 120,
-               candidates: list[str] | None = None) -> dict:
-    """The local vision model's reading of one frame: {"screen_share", "highlighted", "name"}.
-    `candidates`: name labels the text reader found in the frame (the answer must be one of them)."""
+               candidates: list[str] | None = None, panel_names: list[str] | None = None) -> dict:
+    """The local vision model's reading of one frame: {"screen_share", "highlighted", "name", "list_name"}.
+    `candidates`: name labels the text reader found in the frame (the answer must be one of them); `panel_names`:
+    the participants list in the frame (its speaker must be one of them)."""
     import requests
 
     url = (ollama_url or config.OLLAMA_URL).rstrip("/") + "/api/chat"
     payload = {"model": model, "stream": False, "think": False, "keep_alive": "2m",
-               "options": {"temperature": 0, "num_predict": 120},
-               "messages": [{"role": "user", "content": vision_prompt(candidates or []),
+               "options": {"temperature": 0, "num_predict": 160},
+               "messages": [{"role": "user", "content": vision_prompt(candidates or [], panel_names),
                              "images": [base64.b64encode(image.read_bytes()).decode()]}]}
     response = requests.post(url, json=payload, timeout=timeout)
     response.raise_for_status()
     reply = parse_vision_reply(response.json().get("message", {}).get("content", ""))
-    if candidates and reply["name"] and reply["name"].lower() not in {c.lower() for c in candidates}:
-        reply["name"] = ""  # not a label on screen: never trust an invented name
+    return restrict(reply, candidates, panel_names)
+
+
+def restrict(reply: dict, candidates: list[str] | None, panel_names: list[str] | None) -> dict:
+    """Drops answers that aren't among the names on screen (never trust an invented name)."""
+    def match(name: str, allowed: list[str] | None) -> str:
+        if not name or not allowed:
+            return name if allowed is None else ""
+        return next((a for a in allowed if participants.fold(a) == participants.fold(name)), "")
+
+    if candidates:
+        reply["name"] = match(reply.get("name", ""), candidates)
+    reply["list_name"] = match(reply.get("list_name", ""), panel_names or [])
     return reply
 
 
@@ -433,8 +536,8 @@ def _true(value) -> bool:
 
 
 def parse_vision_reply(text: str) -> dict:
-    """Reads the vision model's JSON answer {screen_share, highlighted, name}. Small models write booleans as
-    "true"/"false" strings; both are accepted.
+    """Reads the vision model's JSON answer {screen_share, highlighted, name, list_name}. Small models write
+    booleans as "true"/"false" strings; both are accepted.
     """
     text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
     match = re.search(r"\{.*\}", text, re.S)
@@ -444,11 +547,16 @@ def parse_vision_reply(text: str) -> dict:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    name = data.get("name")
-    cleaned = clean_name(name) if isinstance(name, str) and name.strip().lower() not in ("null", "none") else None
+
+    def name_of(value) -> tuple[str, bool] | None:
+        return clean_name(value) if isinstance(value, str) and value.strip().lower() not in ("null", "none") else None
+
+    cleaned = name_of(data.get("name"))
+    listed = name_of(data.get("list_name"))
     highlighted = _true(data.get("highlighted"))
     return {"screen_share": _true(data.get("screen_share")), "highlighted": highlighted,
-            "name": cleaned[0] if cleaned and highlighted else "", "truncated": bool(cleaned and cleaned[1])}
+            "name": cleaned[0] if cleaned and highlighted else "", "truncated": bool(cleaned and cleaned[1]),
+            "list_name": listed[0] if listed else ""}
 
 
 def unload_model(model: str) -> None:
@@ -460,23 +568,68 @@ def unload_model(model: str) -> None:
         pass
 
 
-def pick_for_vision(results: list[FrameResult], cap: int) -> list[FrameResult]:
-    """Unresolved frames worth asking about, spread over speakers; speakers with no name first."""
+REVIEW_FIRST = ("unresolved", "ambiguous", "screen_share")  # frames the text reader couldn't settle come first
+
+
+def pick_for_review(results: list[FrameResult], cap: int) -> list[FrameResult]:
+    """Frames the vision model reviews: every speaker gets frames in turn (speakers without a name first, then
+    the most sampled, i.e. most-spoken), spread over their turns; frames the text reader couldn't settle (including
+    "screen share") before the ones it read, which the review confirms or corrects."""
     if cap <= 0:
         return []
     named = {r.speaker for r in results if r.name}
-    todo = [r for r in results if r.status in ("unresolved", "ambiguous")]
     by: dict[str, list[FrameResult]] = defaultdict(list)
-    for r in todo:
-        by[r.speaker].append(r)
-    order = sorted(by, key=lambda s: (s in named, s))
+    for r in results:
+        if r.status != "error" and r.path:
+            by[r.speaker].append(r)
+    for spk, frames in by.items():
+        todo = [r for r in frames if r.status in REVIEW_FIRST]
+        done = [r for r in frames if r.status not in REVIEW_FIRST]
+        by[spk] = _spread(todo) + _spread(done)
+    order = sorted(by, key=lambda s: (s in named, -len(by[s]), s))
     picked: list[FrameResult] = []
     while len(picked) < cap and any(by.values()):
         for spk in order:
             if by[spk] and len(picked) < cap:
-                frames = by[spk]
-                picked.append(frames.pop(len(frames) // 2 if len(frames) > 2 else 0))
+                picked.append(by[spk].pop(0))
     return picked
+
+
+def pick_for_vision(results: list[FrameResult], cap: int) -> list[FrameResult]:
+    """Older name of pick_for_review (kept for scripts)."""
+    return pick_for_review(results, cap)
+
+
+def _spread(frames: list[FrameResult]) -> list[FrameResult]:
+    """The frames reordered so the first few are spread over the meeting: middle, ends, then the rest."""
+    out, pending = [], [sorted(frames, key=lambda r: r.t)]
+    while pending:
+        part = pending.pop(0)
+        if not part:
+            continue
+        mid = len(part) // 2
+        out.append(part[mid])
+        pending += [part[:mid], part[mid + 1:]]
+    return out
+
+
+def review_frame(r: FrameResult, reply: dict) -> str:
+    """Applies the vision model's answer to one frame: confirmed (same name as the text reader), corrected
+    (another name: kept next to the text reader's), filled (the text reader had none) or no_answer."""
+    if reply.get("list_name") and not r.list_name:  # the list's speaker, read by the model (the scan had none)
+        r.list_name, r.list_by_vision = reply["list_name"], True
+    seen = reply.get("name") or ""
+    if not seen:
+        if reply.get("screen_share") and not r.name:
+            r.status = "screen_share"
+        r.review = "no_answer"
+    elif r.name and (seen.lower() == r.name.lower() or same_person(r.name, seen) or same_person(seen, r.name)):
+        r.review = "confirmed"
+    elif r.name:
+        r.review, r.vision_name = "corrected", seen
+    else:
+        r.status, r.name, r.truncated, r.review = "vision", seen, reply.get("truncated", False), "filled"
+    return r.review
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +639,9 @@ def pick_for_vision(results: list[FrameResult], cap: int) -> list[FrameResult]:
 def run(src: Path, segments: list[dict], work: Path, progress: Callable[[float], None],
         options: dict | None = None, ocr: Callable | None = None, vision: Callable | None = None,
         has_video: bool = True) -> tuple[dict, dict]:
-    """(screen_names, screen_info) for one recording. `progress(fraction)` may raise JobCancelled."""
+    """(screen_names, screen_info) for one recording; screen_info["participants"] holds the participants list
+    (the pipeline stores it on the transcript). `progress(fraction)` may raise JobCancelled.
+    Options: enabled, vision_model, vision_cap, debug, participants (scan for the list, default on)."""
     options = options or {}
     started = time.time()
     info = {"status": "done", "frames": 0, "resolved": 0, "screen_share": 0, "unresolved": 0,
@@ -502,13 +657,33 @@ def run(src: Path, segments: list[dict], work: Path, progress: Callable[[float],
     frames_dir.mkdir(parents=True, exist_ok=True)
     paths: list[tuple[float, str, Path]] = []
     done = [0]
-    total_steps = len(samples) * 2 + max(0, int(options.get("vision_cap", VISION_CAP) or 0)) * 4
+    duration = max((float(s.get("end") or 0) for s in segments), default=0.0) + 2
+    scan_on = options.get("participants", True)
+    scan_steps = int(duration / participants.SCAN_EVERY) if scan_on else 0
+    total_steps = scan_steps + len(samples) * 2 \
+        + review_budget(len({spk for _, spk in samples}), options.get("vision_cap")) * 4
 
     def step(n: int = 1) -> None:
         """Advances the stage's progress by `n` units of work."""
         done[0] += n
         progress(min(0.99, done[0] / max(1, total_steps)))
 
+    # 1. The participants list, on every scanned frame of the recording.
+    readings, scanned = [], 0
+    if scan_on:
+        try:
+            readings, scanned = participants.scan(src, duration, work, lambda _d, _t: step(), ocr=ocr)
+        except pipeline_cancelled():
+            raise
+        except RuntimeError as exc:  # no text reader: the tiles can't be read either (reported below)
+            log.warning("Participants scan failed: %s", exc)
+    talking = participants.speaking(readings)
+    canon = participants.canonical_map(readings)
+    summary = participants.summarise(readings, talking, scanned) if scan_on else {"status": "off"}
+    list_names = [e["name"] for e in summary.get("names", [])]
+    listed = participants.list_evidence(talking, segments, canon)
+
+    # 2. Sampled frames at the start of each speaker's turns: the highlighted tile's name.
     def grab(sample):
         """Extracts one sampled frame (reusing a frame saved earlier); None if ffmpeg failed."""
         t, spk = sample
@@ -521,7 +696,7 @@ def run(src: Path, segments: list[dict], work: Path, progress: Callable[[float],
             if item:
                 paths.append(item)
     if not paths:
-        return {}, dict(info, status="no_frames", seconds=round(time.time() - started, 1))
+        return {}, dict(info, status="no_frames", seconds=round(time.time() - started, 1), participants=summary)
     try:
         texts = (ocr or run_ocr)([p for _, _, p in paths], on_line=step)
     except RuntimeError as exc:
@@ -534,39 +709,84 @@ def run(src: Path, segments: list[dict], work: Path, progress: Callable[[float],
             results.append(FrameResult(t, spk, "error", path=str(path)))
             continue
         status, found, tiles = read_frame(load_rgb(path), lines)
+        said = participants.at(talking, t)
         results.append(FrameResult(t, spk, status, found[0] if found else "", bool(found and found[1]),
-                                   tiles, str(path)))
+                                   tiles, str(path), list_name=canon.get(said, said)))
+
+    # 3. The vision model reviews frames of every speaker (and reads the list's speaker where a list is shown).
     model = options.get("vision_model") or ""
-    cap = int(options.get("vision_cap", VISION_CAP) or 0)
-    if model and cap > 0:
-        info["vision_model"] = model
-        ask = vision or (lambda image, names: ask_vision(model, image, candidates=names))
-        for r in pick_for_vision(results, cap):
-            names = [n[0] for n in (clean_name(ln["text"]) for ln in texts.get(r.path) or []) if n]
+    speakers = len({r.speaker for r in results})
+    cap = review_budget(speakers, options.get("vision_cap"))
+    info.update(vision_model=model, reviewed=0, confirmed=0, corrected=0, filled=0, no_answer=0, review_reason="")
+    if not model:
+        info["review_reason"] = "No vision model is installed (Settings → Meetings → Video frames)."
+    else:
+        ask = _asker(model, vision)
+        for r in pick_for_review(results, cap):
+            lines = texts.get(r.path) or []
+            labels = [n[0] for n in (clean_name(ln["text"]) for ln in lines) if n]
+            names = _unique(labels + list_names)
+            panel = participants.find_list(lines)
             try:
-                reply = ask(Path(r.path), list(dict.fromkeys(names))) if vision is None else ask(Path(r.path))
+                reply = ask(Path(r.path), names, [row.name for row in panel.rows] if panel else None)
+            except pipeline_cancelled() as exc:  # a cancelled job stops here
+                raise exc
             except Exception as exc:  # the stage still finishes with what the text reader found
-                log.warning("Vision fallback failed: %s", exc)
+                log.warning("Vision review failed: %s", exc)
                 info["error"] = info["error"] or f"Vision model: {type(exc).__name__}"
+                if not info["reviewed"]:
+                    info["review_reason"] = f"The vision model ({model}) didn't answer: {type(exc).__name__}."
                 break
-            info["vision_frames"] += 1
+            info["reviewed"] += 1
+            info[review_frame(r, reply)] += 1
             step(4)
-            if reply.get("screen_share"):
-                r.status = "screen_share"
-            elif reply.get("name"):
-                r.status, r.name, r.truncated = "vision", reply["name"], reply.get("truncated", False)
-                info["vision_resolved"] += 1
         if vision is None:
             unload_model(model)
+        if not info["reviewed"] and not info["review_reason"]:
+            info["review_reason"] = "No frames could be read from the video."
+    info["vision_frames"] = info["reviewed"]
+    info["vision_resolved"] = info["filled"] + info["corrected"]
     if options.get("debug"):
         _save_debug(results, work)
-    names = aggregate(results)
+    names = aggregate(results, listed, list_names)
     counts = Counter(r.status for r in results)
     info.update(frames=len(results), resolved=sum(1 for r in results if r.name),
                 screen_share=counts["screen_share"], unresolved=counts["unresolved"] + counts["ambiguous"],
-                seconds=round(time.time() - started, 1))
+                list_frames=sum(sum(c.values()) for c in listed.values()),
+                list_agree=sum(e.get("both", 0) for v in names.values() for e in v["names"]),
+                list_conflicts=sum(1 for v in names.values() for c in v.get("conflicts", []) if "list" in c),
+                seconds=round(time.time() - started, 1), participants=summary)
     progress(1.0)
     return names, info
+
+
+def _unique(names: list[str]) -> list[str]:
+    """Names without repeats (spellings that differ only in accents count once; the accented one is kept)."""
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        groups.setdefault(participants.fold(name), []).append(name)
+    return [participants.best_spelling(v) for v in groups.values()]
+
+
+def _asker(model: str, vision: Callable | None) -> Callable:
+    """(image, names, panel names) → reply. An injected `vision(image, names[, panel_names])` (tests) or the
+    local Ollama model."""
+    if vision is None:
+        return lambda image, names, panel: ask_vision(model, image, candidates=names, panel_names=panel)
+    import inspect
+
+    takes_panel = len(inspect.signature(vision).parameters) >= 3
+    return lambda image, names, panel: restrict(vision(image, names, panel) if takes_panel else vision(image, names),
+                                                names, panel)
+
+
+def pipeline_cancelled() -> type:
+    """The job-cancelled exception (imported lazily: pipeline imports this module)."""
+    try:
+        from transcriber.pipeline import JobCancelled
+        return JobCancelled
+    except ImportError:  # pragma: no cover
+        return KeyboardInterrupt
 
 
 def _save_debug(results: list[FrameResult], work: Path) -> None:

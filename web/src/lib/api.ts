@@ -88,6 +88,23 @@ export const api = {
 };
 
 /** POST that answers with Server-Sent Events; calls onEvent for each `data:` JSON event. */
+/** Upload a file in chunks (the same path as a new meeting's recording); returns its path on this Mac. */
+export async function uploadInChunks(file: File, onProgress: (pct: number) => void): Promise<string> {
+  const init = await api.post<{ upload_id: string; chunk_size: number; received: number[] }>(
+    "/api/meetings/uploads", { name: file.name, size: file.size });
+  const total = Math.max(1, Math.ceil(file.size / init.chunk_size));
+  const have = new Set(init.received);
+  for (let n = 0; n < total; n++) {
+    if (!have.has(n)) {
+      await api.putBytes(`/api/meetings/uploads/${init.upload_id}/chunks/${n}`,
+        file.slice(n * init.chunk_size, (n + 1) * init.chunk_size));
+    }
+    onProgress(((n + 1) / total) * 100);
+  }
+  const done = await api.post<{ path: string }>(`/api/meetings/uploads/${init.upload_id}/complete`);
+  return done.path;
+}
+
 export async function stream<E = Record<string, unknown>>(
   path: string,
   body: unknown,
@@ -190,6 +207,9 @@ export interface Prefs {
   screen_names: boolean;
   vision_fallback: boolean;
   vision_cap: number;
+  vision_frames: number;  // frames the vision model reviews per meeting; 0 = auto (4 per speaker, 12 to 48)
+  /** Scan the whole video for the call's participants list (attendees, and a second check of who spoke). */
+  participants_scan?: boolean;
   screen_debug: boolean;
   vision_model: string;
   speaker_model: string;
@@ -509,6 +529,8 @@ export interface Job {
   eta?: number;
   error: string | null;
   transcript_id: string | null;
+  /** transcribe (default), screen (names from the video), voiceprints, reference */
+  kind?: string;
   partial?: { segments: { start: number; end: number; text: string }[]; windows: number };
   followup?: FollowUp | null;
 }
@@ -537,10 +559,59 @@ export interface SpeakerLabel {
   confidence: number;
   level: "high" | "medium" | "low" | "confirmed";
   evidence: string[];
-  /** "microphone": you, on your own track in a call Quorum recorded (never changed automatically). */
-  source: "auto" | "user" | "cloud" | "microphone";
+  /** "microphone": you, on your own track in a call Quorum recorded (never changed automatically);
+   *  "participants": spelled as in the call's participants list (the check at the end of identification). */
+  source: "auto" | "user" | "cloud" | "microphone" | "participants" | "reference";
   cloud?: { model: string; reason: string; lines: number[]; kept: boolean };
   previous?: SpeakerLabel;
+  /** not_in_list: the name matches nobody in the meeting's participants list. */
+  flag?: "not_in_list";
+  /** In the participants list (exactly, or after the check took its spelling). */
+  listed?: boolean;
+  /** For a speaker without a name: listed people no speaker has yet. */
+  suggestions?: string[];
+}
+
+/** One person in the meeting's attendees: from the video's participants list, a named speaker, or added by you. */
+export interface Attendee {
+  name: string;
+  source: "video" | "speaker" | "you";
+  speaker: string | null;
+  speaker_name: string;
+  spoke: boolean;
+  first_seen: number | null;
+  last_seen: number | null;
+  first_spoke: number | null;
+  frames: number;
+}
+
+/** A change the participants-list check made to a speaker's name. */
+export interface ParticipantsChange {
+  speaker: string;
+  from: string;
+  to: string;
+  how: string;
+  reason: string;
+  state: "pending" | "kept" | "reverted" | "edited";
+}
+
+/** The last check of the speaker names against the participants list. */
+export interface ParticipantsCheck {
+  changes: ParticipantsChange[];
+  flagged: { speaker: string; name: string }[];
+  confirmed: string[];
+  suggestions: string[];
+  roster: string[];
+  created_at: string;
+}
+
+/** One of your edits of the transcript (applied last; `stale`: its line can't be found any more). */
+export interface TranscriptEdit {
+  id: string;
+  kind: "text" | "speaker" | "split" | "merge";
+  text: string;
+  state: "applied" | "stale";
+  created: string;
 }
 
 /** A name read from a speaker's video tile, and how often it was seen. */
@@ -552,7 +623,14 @@ export interface ScreenName {
   ocr: number;
   speaker_view: number;
   vision: number;
+  /** Frames where the participants list marked this name as speaking while this speaker talked. */
+  list?: number;
+  /** Sampled frames where the tile and the list showed this name at the same moment. */
+  both?: number;
 }
+
+/** A moment two sources named different people: text reader (ocr), vision model, participants list. */
+export interface ScreenConflict { t: number; ocr?: string; vision?: string; list?: string }
 
 /** One change the cloud review made to a speaker's name, and its state (pending, kept, reverted…). */
 export interface ReviewChange {
@@ -578,6 +656,8 @@ export interface SpeakerReview {
   rejected: { speaker: string; name: string; why: string }[];
   agreed?: number;
   parts?: number;
+  /** The spelling step before the names: fixes made (in the Corrections tab) and refused. */
+  spelling?: { fixes: number; rejected: { line: number; text: string; why: string }[]; error?: string };
 }
 
 /** One line of a transcript: speaker, start and end time, text. */
@@ -586,6 +666,8 @@ export interface Segment {
   start: number;
   end: number;
   text: string;
+  /** You edited this line (wording, speaker, split or merge). */
+  edited?: boolean;
 }
 
 /** A full meeting for the meeting page: lines, speaker labels, summary, review and model choices. */
@@ -599,9 +681,23 @@ export interface Transcript extends TranscriptMeta {
   review?: SpeakerReview | null;
   models?: MeetingModels;
   followup?: FollowUp | null;
-  screen_names?: Record<string, { names: ScreenName[]; frames: number; resolved: number }>;
+  screen_names?: Record<string, { names: ScreenName[]; frames: number; resolved: number; list_frames?: number;
+                                  conflicts?: ScreenConflict[] }>;
+  /** What the on-screen names stage did. The vision review (newer transcripts): frames reviewed, and how many it
+   *  confirmed, corrected or filled; `review_reason` says why nothing was reviewed. */
   screen_info?: { status: string; frames: number; resolved: number; screen_share: number; unresolved: number;
-                  vision_frames: number; vision_model: string; seconds: number; error: string };
+                  vision_frames: number; vision_model: string; seconds: number; error: string;
+                  reviewed?: number; confirmed?: number; corrected?: number; filled?: number; no_answer?: number;
+                  review_reason?: string; list_frames?: number; list_agree?: number; list_conflicts?: number };
+  /** The call's participants list read from the video: who joined (and when), who was only invited. */
+  participants?: { status: string; names: { name: string; frames: number; first_seen: number; last_seen: number; spoke: number }[];
+                   invited: string[]; count: number | null; frames_scanned: number; frames_with_list: number;
+                   frames_speaking: number; kinds: string[] } | null;
+  attendees?: { attendees: Attendee[]; invited: string[]; from_video: boolean };
+  participants_check?: ParticipantsCheck | null;
+  edits?: TranscriptEdit[];
+  /** After an edit moved lines to a named person: offer to update their voice fingerprint. */
+  voice_question?: { speaker: string; name: string };
   processing_seconds?: number;
   /** Corrections made with other transcripts of the same meeting (Voice Memos, claude.ai, …). */
   correction?: Correction | null;
@@ -629,7 +725,9 @@ export interface CorrectionRef {
 /** One correction: words replaced, added or removed, or a turn boundary moved. `reverted`: undone by you. */
 export interface CorrectionChange {
   id: string;
-  kind: "word" | "insert" | "delete" | "turn";
+  /** word / insert / delete: words; turn: a boundary moved; speaker: a whole line given to another speaker;
+   *  punct: a sentence split or joined; model: a sentence fix proposed by the chosen model. */
+  kind: "word" | "insert" | "delete" | "turn" | "speaker" | "punct" | "model";
   from: string;
   to: string;
   sources: string[];
@@ -637,6 +735,26 @@ export interface CorrectionChange {
   t: number;
   name_or_number: boolean;
   reverted?: boolean;
+  /** model: the line no longer reads as the model saw it (run the review again). */
+  stale?: boolean;
+  label?: string;          // speaker / model: the new speaker label
+  speaker_to?: string;     // model: the new speaker's name
+  text?: string;           // speaker: the line
+  reason?: string;         // model: why
+  layer?: "review" | "cloud_review";  // model: the corrections review, or the cloud review's spelling fixes
+  model?: string;
+}
+
+/** One line of the transcript with its corrections: what it said and says now. */
+export interface CorrectionSentence {
+  seg: number;
+  before: string;
+  after: string;
+  ids: string[];
+  t: number;
+  speaker_from: string | null;
+  speaker_to: string | null;
+  sources: string[];
 }
 
 export interface Correction {
@@ -645,8 +763,16 @@ export interface Correction {
   /** Per segment index: [start, end, change id] character spans of corrected words. */
   marks: Record<string, [number, number, string][]>;
   names: Record<string, { name: string; share: number; words: number }>;
-  stats: { words: number; turns: number; names: number; applied_refs: number };
+  stats: { words: number; turns: number; names: number; applied_refs: number; speakers?: number; sentences?: number;
+           model?: number; model_stale?: number };
+  sentences?: CorrectionSentence[];
+  /** The model's review, if one was run: its fixes are in `changes` (kind "model"). */
+  model?: { model: string; label: string; at: string } | null;
+  /** Every model's fixes by source: review (the corrections review), cloud_review (the cloud review's spelling). */
+  layers?: Record<string, { model: string; label: string; at: string; source?: string }>;
   reverted: string[];
+  /** Changes you checked and kept. */
+  kept?: string[];
   undone: boolean;
   updated_at: string;
 }

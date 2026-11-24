@@ -891,6 +891,7 @@ def run(src: Path, progress: Callable[[dict], None], speakers: dict | None = Non
         "speaker_names": {},
         "speaker_embeddings": embeddings,  # voice fingerprints: recognise people across meetings
         "screen_names": screen_found,      # names on the active speaker's tile, per speaker label
+        "participants": screen_info.pop("participants", None),  # names in the call's participants list
         "screen_info": screen_info,
         "segments": segments,
         "processing_seconds": round(elapsed),
@@ -1077,6 +1078,7 @@ def run_screen_only(tid: str, progress: Callable[[dict], None], options: dict | 
     finally:
         shutil.rmtree(work, ignore_errors=True)
     transcript = load_transcript(tid)  # it may have been renamed meanwhile
+    transcript["participants"] = info.pop("participants", None)
     transcript["screen_names"], transcript["screen_info"] = found, info
     save_transcript(transcript)
     report("finish", 1.0)

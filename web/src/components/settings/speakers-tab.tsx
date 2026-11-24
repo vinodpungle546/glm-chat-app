@@ -9,7 +9,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/components/app-provider";
 import { SectionTitle } from "@/components/settings/settings-dialog";
-import { Button, Callout, ConfirmDialog, Input, Switch } from "@/components/ui";
+import { Button, Callout, ConfirmDialog, Switch } from "@/components/ui";
 import { api } from "@/lib/api";
 import { FramesNote, ModelSelect } from "@/components/meetings/model-select";
 import { askNotificationPermission } from "@/lib/meeting-check";
@@ -44,7 +44,7 @@ export function SpeakersTab() {
           hint="Local models only: speaker names are always worked out on this Mac." />
         <FramesNote speakerModel={prefs.speaker_model} />
         <ModelSelect kind="frames" id="pref-vision-model" label="Video frames (names on the participants' tiles)"
-          defaultLabel="Recommended" value={prefs.vision_model} disabled={!prefs.vision_fallback}
+          defaultLabel="Recommended" value={prefs.vision_model}
           onChange={(v) => updatePrefs({ vision_model: v })}
           hint="Only models that can read images are listed. Frames never leave this Mac." />
         <ModelSelect kind="summary" id="pref-summary-model" label="Meeting summaries"
@@ -103,15 +103,25 @@ export function SpeakersTab() {
         <Switch id="pref-screen" checked={prefs.screen_names} onChange={(v) => updatePrefs({ screen_names: v })}
           label="Read participant names from the video"
           description="Finds the highlighted (active speaker) tile at each speaker's turns and reads its name label with Apple's on-device text recognition." />
-        <Switch id="pref-vision" checked={prefs.vision_fallback} onChange={(v) => updatePrefs({ vision_fallback: v })}
-          label="Ask the local vision model when the text reader can't tell"
-          description="Sends unclear frames to a local vision model to read the name label only, never to recognise faces. Frames never go to a cloud model." />
-        <div className="flex items-center gap-3 py-2 text-sm">
-          <label htmlFor="pref-vision-cap">Frames per meeting the vision model may read</label>
-          <Input id="pref-vision-cap" type="number" min={0} max={100} className="w-20" value={prefs.vision_cap}
-                 onChange={(e) => updatePrefs({ vision_cap: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} />
-          <span className="text-xs text-muted">about 9 s each</span>
+        <p className="py-2 text-[13px] text-muted" data-testid="vision-review-note">
+          The local vision model (above) then reviews frames of every speaker, always: it confirms or corrects what the
+          text reader found and fills in names it missed, including frames with a shared screen or a side panel open.
+          It only reads name labels, never faces, and frames never leave this Mac.
+        </p>
+        <div className="flex flex-wrap items-center gap-3 py-2 text-sm">
+          <label htmlFor="pref-vision-frames">Frames the vision model reviews per meeting</label>
+          <select id="pref-vision-frames" value={prefs.vision_frames ?? 0} data-testid="pref-vision-frames"
+                  onChange={(e) => updatePrefs({ vision_frames: Number(e.target.value) })}
+                  className="h-9 rounded-lg border border-border-strong bg-surface px-3 text-sm">
+            <option value={0}>Auto: 4 per speaker (12 to 48)</option>
+            {[...new Set([12, 24, 30, 36, 48, 72, 100, prefs.vision_frames || 12])].sort((a, b) => a - b)
+              .map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <span className="text-xs text-muted">about 6 to 9 s each</span>
         </div>
+        <Switch id="pref-participants-scan" checked={prefs.participants_scan ?? true} onChange={(v) => updatePrefs({ participants_scan: v })}
+          label="Read the participants list from the whole video"
+          description="Checks one frame a second for the People / Participants panel (or the thumbnails strip while someone shares): it gives the meeting's attendees and a second check of who was speaking. Adds about 2 minutes per 15 minutes of video, on this Mac." />
         <Switch id="pref-screen-debug" checked={prefs.screen_debug} onChange={(v) => updatePrefs({ screen_debug: v })}
           label="Keep frame crops (debugging)"
           description="Saves the tile crops next to the transcripts so you can see what was read. Off by default." />

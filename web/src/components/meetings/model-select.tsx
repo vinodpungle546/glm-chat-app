@@ -41,7 +41,7 @@ export function useLocalModels(kind: ModelKind) {
   return { data, reload: load };
 }
 
-const selectClass = "h-9 min-w-56 max-w-full rounded-lg border border-border-strong bg-surface px-2.5 text-sm";
+const selectClass = "h-9 w-56 max-w-full rounded-lg border border-border-strong bg-surface px-2.5 text-sm";
 
 /**
  * A labelled <select> of models. '' means 'use the default' (`defaultLabel`). For local models it marks

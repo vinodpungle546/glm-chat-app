@@ -219,11 +219,19 @@ def test_new_jobs_pass_on_screen_options(client, monkeypatch):  # noqa: F811
     monkeypatch.setattr(meetings, "start", lambda path, speakers=None, screen=None, models=None:
                         seen.update(screen=screen, models=models) or {"id": "j"})
     client.post("/api/meetings/jobs", json={"path": "/x/call.mov"})
-    assert seen["screen"] == {"enabled": True, "vision_model": "gemma4:e4b", "vision_cap": 12, "debug": False}
-    client.put("/api/preferences", json={"vision_fallback": False, "screen_debug": True})
+    # The vision review always runs (vision_cap None = 4 frames per speaker, 12 to 48).
+    assert seen["screen"] == {"enabled": True, "vision_model": "gemma4:e4b", "vision_cap": None, "debug": False,
+                              "participants": True}
+    client.put("/api/preferences", json={"vision_fallback": False, "screen_debug": True, "vision_frames": 30})
     client.post("/api/meetings/jobs", json={"path": "/x/call.mov"})
-    assert seen["screen"] == {"enabled": True, "vision_model": "", "vision_cap": 0, "debug": True}
+    assert seen["screen"] == {"enabled": True, "vision_model": "gemma4:e4b", "vision_cap": 30, "debug": True,
+                              "participants": True}
+    from api import main
+    assert main.review_frames(2) == 12 and main.review_frames(6) == 24 and main.review_frames(20) == 48
     client.put("/api/preferences", json={"selected_model": "cloud:gaia", "vision_fallback": True})
     client.post("/api/meetings/jobs", json={"path": "/x/call.mov"})
     assert seen["screen"]["vision_model"] == "gemma4:e4b"  # never a cloud model
     assert cp.parse_model_id("cloud:gaia") is None
+    # A Settings page from before the review saves the old number box (vision_cap): it becomes the frame count.
+    assert client.put("/api/preferences", json={"vision_cap": 18}).json()["vision_frames"] == 18
+    assert client.put("/api/preferences", json={"vision_frames": 500}).status_code == 400

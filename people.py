@@ -90,6 +90,21 @@ def forget_voice(person_id: str, path: Path | None = None) -> dict | None:
     return None
 
 
+def forget_meeting(tid: str, path: Path | None = None) -> int:
+    """Deletes the voice fingerprints one meeting taught (when the meeting is deleted, or on request). Returns how
+    many were deleted."""
+    with _LOCK:
+        people = load(path)
+        count = 0
+        for person in people:
+            keep = [v for v in person.get("voiceprints") or [] if v.get("tid") != tid]
+            count += len(person.get("voiceprints") or []) - len(keep)
+            person["voiceprints"] = keep
+        if count:
+            save(people, path)
+        return count
+
+
 def forget_all_voices(path: Path | None = None) -> int:
     """Deletes every stored voice fingerprint (names, roles and facts stay). Returns how many were deleted."""
     with _LOCK:

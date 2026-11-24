@@ -343,6 +343,14 @@ def meeting_meta(transcript: dict, display: dict[str, str], labels: dict[str, di
         name = display.get(spk, spk)
         label = labels.get(spk) or {}
         attendees.append({"name": name, "role": label.get("role", ""), "uncertain": name.endswith("(?)")})
+    spoke = {a["name"].replace("(?)", "").strip().lower() for a in attendees}
+    for row in transcript.get("attendees") or []:  # joined the call (participants list, or added by you)
+        if row.get("speaker"):
+            continue
+        name = (row.get("name") or "").strip()
+        if name and name.lower() not in spoke:
+            attendees.append({"name": name, "role": "", "uncertain": False, "spoke": False})
+            spoke.add(name.lower())
     return {"title": transcript.get("title") or "Meeting", "date": relative_dates.fmt(day), "date_iso": day.isoformat(),
             "weekday": day.strftime("%A"), "start_time": f"{start} {tz}".strip() if start else "",
             "duration": _fmt_duration(duration) if duration else "", "attendees": attendees, "timezone": tz}

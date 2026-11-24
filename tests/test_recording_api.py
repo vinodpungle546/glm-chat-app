@@ -200,3 +200,28 @@ def test_playback_errors_are_passed_on(client, monkeypatch):
     monkeypatch.setattr(meetings, "media_stream", lambda *a, **k: up)
     r = client.get("/api/meetings/transcripts/0123456789abcdef/media/video")
     assert r.status_code == 404 and r.json()["detail"] == "Recording not found." and up.closed
+
+
+def test_a_moved_recording_is_found_and_linked_through_the_api(client, monkeypatch):
+    """The player's "find the recording" step: candidates and linking pass through to the transcriber; its
+    refusal (a file of another length) reaches the page as a readable error."""
+    linked = []
+    monkeypatch.setattr(meetings, "recording_candidates", lambda tid: {"candidates": [
+        {"path": "/Users/x/Desktop/Sync.mov", "name": "Sync.mov", "folder": "Desktop", "match": True}]})
+
+    def relink(tid, path):
+        linked.append((tid, path))
+        if path.endswith("short.mov"):
+            raise RuntimeError("This file is 0:09 long; the meeting is 0:04. It looks like a different recording.")
+        return {"available": True, "video": True, "parts": [], "linked": "/m/uploads/Sync.mov", "copied": True}
+
+    monkeypatch.setattr(meetings, "relink_recording", relink)
+    tid = "0123456789abcdef"
+    assert client.get(f"/api/meetings/transcripts/{tid}/recording/candidates").json()["candidates"][0]["folder"] == "Desktop"
+    r = client.post(f"/api/meetings/transcripts/{tid}/recording", json={"path": "/Users/x/Desktop/Sync.mov"})
+    assert r.status_code == 200 and r.json()["available"] is True
+    bad = client.post(f"/api/meetings/transcripts/{tid}/recording", json={"path": "/x/short.mov"})
+    assert bad.status_code == 400 and "different recording" in bad.json()["detail"]
+    assert client.post(f"/api/meetings/transcripts/{tid}/recording", json={"path": ""}).status_code == 422
+    assert client.get("/api/meetings/transcripts/bad%20id!/recording/candidates").status_code == 404
+    assert linked == [(tid, "/Users/x/Desktop/Sync.mov"), (tid, "/x/short.mov")]

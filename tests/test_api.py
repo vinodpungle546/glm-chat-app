@@ -22,6 +22,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "PREFS_FILE", tmp_path / "preferences.json")
     monkeypatch.setattr(main, "LABELS_DIR", tmp_path / "labels")
     monkeypatch.setattr(main, "SUMMARIES_DIR", tmp_path / "summaries")
+    monkeypatch.setattr(main, "ATTENDEES_DIR", tmp_path / "attendees")
     monkeypatch.setattr(main, "SESSIONS_DIR", tmp_path / "sessions")
     monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(connectors, "CONNECTORS_FILE", tmp_path / "connectors.json")

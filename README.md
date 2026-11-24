@@ -274,6 +274,27 @@ Speech-to-text (**Whisper large-v3-turbo**) and speaker separation (**pyannote 3
 
 ⇧⌘5 screen recordings still work as before: they reach Quorum only when they're finished, and their audio tracks are mixed.
 
+## Play a meeting back
+
+Every meeting made from a recording has a player at the top of its page:
+- **Recordings:** calls recorded by Quorum, uploads, and recordings from the watch folder all work.
+- **Jumping:** click a line's time to play from there. The line being heard is highlighted.
+- **Speed:** choose from 0.75× to 2×.
+- **Recorded calls:** the call and your microphone have separate volumes.
+- **Changing the watch folder** doesn't stop earlier meetings from playing.
+
+- **Maximize:** full screen, or double-click the video; Esc leaves. The **S/M/L** button sets the video's size on the page.
+- **Captions (CC):** the line being spoken, with the speaker's name, shown over the video (or under the controls for audio). They come from the transcript as shown, so name edits and corrections appear in them. The size and captions settings are remembered.
+
+**Copy and Download** in the meeting's header give the transcript as shown, with speaker names and corrected words:
+- **Copy:** plain text (`Name: words`), with times (`[12:03] Name: words`), or Markdown;
+- **Download:** the same three formats, plus subtitles (`.vtt`, `.srt`).
+
+If the recording has moved, for example after its upload copy was deleted, the page looks for it by name in Desktop, Downloads, Movies, Documents and the meetings folders.
+- **Found:** a file as long as the meeting gets **Use this recording**. It's copied into the uploads folder as an APFS clone, which is instant, takes no extra space and keeps working if the original is deleted.
+- **Not found:** you can upload it again.
+- **Wrong length:** a file of a different length is refused.
+
 ## Correct with another transcript
 
 On a meeting's page, **Add another transcript** takes any of these, alone or together, now or later (earlier meetings too):
@@ -286,11 +307,47 @@ None is needed: without them the meeting stays as it is.
 - Each source is lined up with Quorum's transcript word by word. A recording also gets its time offset ("started 12 s before the recording"). A source that matches too little is marked "doesn't match this meeting" and changes nothing; one covering part of the meeting corrects only that part.
 - Where they disagree, the majority wins. The Voice Memos recording and its text come from the same microphone, so they count as one vote; claude.ai is another. With one source, its word is used where the surrounding words agree, unless Quorum's Whisper was sure of its own. A recording is transcribed by Whisper too, so its word wins only where Whisper was clearly surer of it (a noisy memo doesn't undo the call's better hearing). Names you have in Memory beat unknown spellings.
 - Words are removed only when two sources agree, or when they're a known Whisper invention in silence ("Thank you.").
-- A source with speaker names (a Teams transcript, `Name: text`) names Quorum's speakers and moves turn boundaries that are off by a few words. Your microphone's speaker and labels you set are never changed.
+- With one source, a few extra words (up to 3) are removed, and up to 8 missing words are added, inside a sentence the source lines up with well.
+- **Sentence ends:** where a source ends a sentence and Quorum doesn't, or the other way round, the punctuation and the next word's capital follow the source. Quorum's punctuation is kept if another source agrees with it.
+- **Who said what:** a source with speaker names (a Teams transcript, `Name: text`) names Quorum's speakers and moves turn boundaries that are off by a few words. It also gives a whole line to another speaker when at least 80% of that line's words carry that person's name and the name belongs to another of Quorum's speakers. Your microphone's speaker and labels you set are never changed.
 
-**After a correction:** a message gives the counts ("142 words corrected · 6 turns moved · 2 names suggested") with **Undo**. Corrected words are underlined in the transcript; hover to see what they were and which source fixed them. The **Corrections** tab lists the sources (how much matched, the offset; remove any) and every change (revert or bring back each), with **Undo all** and **Apply again**. Search uses the corrected words, and notes written before say so and offer **Regenerate**.
+**Review with a model (optional).** In Add another transcript, choose a model under **Then review the sentences with**, or use **Review now** in the Corrections tab later. The default is **No model**.
+- **What it does:** after the engine, the model reads each line that the other transcripts word differently, next to what they say there, and proposes sentence fixes or a different speaker.
+- **What is kept:** the app only keeps fixes whose every word is in that line or in the other transcripts there, which keep at least half of the line's own words, and which name a real speaker other than your microphone. The message says how many proposals were dropped.
+- **Undoing:** each fix shows "model fix" with its reason and can be reverted. **Remove the model's fixes** drops them all, and the engine's corrections stay. A fix whose line has changed since (another source was added) is shown as no longer matching.
+- **Cloud models:** a local model keeps everything on this Mac. A cloud model first asks, once per meeting and provider, saying what is sent (this meeting's transcript, the other transcripts, the speakers' names) and to whom. Projects set to local never use one.
+
+**After a correction:**
+- **Message:** the counts ("142 words corrected · 6 turns moved · 2 lines given to another speaker · 3 sentences split or joined · 2 names suggested"), with **Undo**.
+- **In the transcript:** corrected words are underlined; hover to see what they were and which source fixed them.
+- **Corrections tab:**
+  - the sources: how much matched, the offset; remove any;
+  - **By sentence:** each changed line as it was (struck through) and as it is now, with any speaker change and a Revert for the whole line;
+  - **Each change:** revert or bring back one change;
+  - **Undo all** and **Apply again**.
+- **Elsewhere:** search uses the corrected words, and notes written before the correction say so and offer **Regenerate**.
 
 Measured on a synthetic meeting: a poor call recording (13% wrong words) went to 8.4% with a clear memo; a clear call with a noisy memo got no changes.
+
+## Edit the transcript yourself
+
+Speaker separation goes wrong when people talk over each other or say very little, so you can fix the transcript
+by hand while watching the recording. **Edit transcript** above the lines turns it on:
+- **Words:** click a line's words to change them (the video plays from that line); Enter saves, Esc cancels.
+- **Who said it:** each line's speaker is a menu of the meeting's speakers, attendees who haven't spoken, and
+  **Someone else…** (a new name becomes a new speaker). Tick several lines to move them together.
+- **Split:** when two people speak in one line, click the first word of the second person and choose who said it;
+  the time is divided in proportion to the words.
+- **Merge with next** joins a line with the following one.
+
+**Your edits always win.** They are applied after every correction (other transcripts, the model review, the cloud
+review's spelling fixes) and after re-identifying speakers, so nothing the app does later overwrites them. Each edit
+is listed under **Your edits** with **Undo**, plus **Undo all**; edited lines are marked *edited*. An edit whose line
+no longer exists (its part of the meeting was undone) is shown as not applied.
+
+**Everything follows:** speakers, attendees, captions, Copy/Download, search, the meeting check and chat use the
+edited transcript, and notes written before the edit are marked out of date. When you move lines to a named person,
+Quorum asks before updating that person's voice fingerprint from the lines they now have (made on this Mac).
 
 ## Meeting check
 
@@ -320,11 +377,69 @@ The meeting check compares a meeting with **earlier meetings** and **memory**, a
 2. finds the highlighted tile (a coloured border, or a white one in newer Teams versions);
 3. reads the name label under it with Apple's Vision framework, on this Mac.
 
-It handles screen sharing (frames are skipped), gallery and speaker view, several highlighted tiles (left unresolved), audio-only files (the step is skipped) and names cut short with "…" (matched to the full name). Frames it can't settle can go to a **local** vision model, which is shown the labels on screen and asked only which one is on the highlighted tile, never anything about faces. The vision model is chosen separately from the chat model in Settings → Meetings, and only models that can read images are offered; the default is **Qwen3-VL 4B** (`ollama pull qwen3-vl:4b-instruct`, 3.3 GB). At most *N* frames per meeting (about 9 s each). Frames never go to a cloud model, and frame crops are kept only when the debug setting is on. Older transcripts: **Read names from video** in a meeting's Speakers panel (`POST /api/meetings/transcripts/{id}/screen-names`) when the video still exists.
+It handles gallery and speaker view, several highlighted tiles (left unresolved), audio-only files (the step is skipped) and names cut short with "…" (matched to the full name).
 
-**Evidence.** An on-screen name seen on 3+ of a speaker's turns counts as strong (≈0.85); seen twice, medium; once, or only read by the vision model, weaker. The Speakers panel's "why" line says e.g. *name on the active tile at 12:04 (seen 9×)*.
+**The vision review always runs** (when a vision model is installed). It's not a fallback.
+- **Which frames:** a local vision model reviews frames of every speaker, unnamed speakers and the most-spoken first, spread over their turns. That includes frames the text reader called a "screen share": a Teams window with the chat or a side panel open has lots of text, and its thin speaking outline is often missed. Before the review, Quorum never looked at those frames again; on three real Teams calls that meant no vision frames at all.
+- **What it does:** for each frame it confirms the text reader's name, corrects it, or fills one in.
+  - It is shown the labels on screen and may only answer with one of them, never anything about faces.
+  - When it disagrees with the text reader, both are kept as evidence, and the Speakers panel lists the disagreements with play links.
+  - The panel shows how many frames were reviewed, confirmed, corrected and filled in, or why none were (for example, no vision model installed).
+- **How many frames:** Auto is 4 per speaker, 12 to 48, or a number in Settings → Meetings. Each takes about 6 to 9 s (Gemma 4 E4B is faster than Qwen3-VL 4B, with the same results on the calls tested), and the estimate includes this time.
+- **Which model:** chosen separately from the chat model in Settings → Meetings, and only models that can read images are offered. The default is **Qwen3-VL 4B** (`ollama pull qwen3-vl:4b-instruct`, 3.3 GB).
+- **Privacy:** frames never go to a cloud model, and frame crops are kept only when the debug setting is on.
+- **Older transcripts:** **Read names from video** in a meeting's Speakers panel (`POST /api/meetings/transcripts/{id}/screen-names`) runs the same review, when the video still exists.
 
-**Voice fingerprints** (Settings → Meetings, on by default) are biometric data: stored only in the memory file on this Mac, never exported or sent anywhere. One is saved when you confirm a name, or automatically when a name was read as text on 3+ of the speaker's turns (≥70% of them) and no other speaker shares it. **Make fingerprints for older meetings** computes them from the recordings with pyannote's embedding model only (no new transcript). Forget one person's voice in Memory, or all voices in Settings → Meetings.
+**The participants list.** Teams and Zoom can show a list of everyone on the call: the People / Participants panel
+(a heading such as "Participants (5)", one row per person, an "Invited" section) or, while someone shares their
+screen, a strip of thumbnails with names. The transcriber reads one frame a second of the whole recording for it
+(text is read again only when the view changes; about 2 minutes per 15 minutes of video), on this Mac:
+- **Attendees:** every name in the list, with when they first and last appeared, and the people only invited.
+- **Who spoke:** the list usually marks the person talking (a ring around their picture, a lit microphone). A row
+  whose colour rises clearly above its own usual level, while no other row's does, is taken as speaking; a coloured
+  avatar doesn't count, because it's always that colour. That name is matched with the speaker talking at that moment.
+- **In the Speakers panel:** how many frames had the list, and for each speaker the name with its counts: **tiles**,
+  **list**, **both** (the tile and the list showed the same person at the same moment). Moments where the text
+  reader, the vision model and the list disagree are listed with play links.
+- The list's full names complete names cut short on tiles, and limit which names the vision model may answer with;
+  where a frame shows the list, the vision model is also asked which row is marked as speaking.
+- Switch the scan off in Settings → Meetings (**Read the participants list from the whole video**).
+
+**Evidence.** An on-screen name seen on 3+ of a speaker's turns counts as strong (≈0.85); seen twice, medium; once, or only read by the vision model, weaker. Marked as speaking in the participants list 5+ times (mostly that name) counts as medium (≈0.65): on real Teams calls the panel marks the speaker only faintly (in 4% of frames on one call). The tile and the list agreeing at the same moment makes it strong (≈0.92). The Speakers panel's "why" line says e.g. *name on the active tile at 12:04 (seen 9×)*.
+
+**The last step: checked against the participants list.** After identification (and after the cloud review, when
+it runs), every name is compared with the list:
+- a name close to a listed one takes the list's spelling, with the reason: "Kieran" → "Ciarán Byrne" (sounds alike,
+  the only similar name), "Owen" → "Owen Hart" (the only Owen), "Priya Shar" → "Priya Sharma" (cut short), accents;
+- a name that matches nobody on the list keeps its place, loses some confidence and is marked **Not in the
+  participants list**;
+- listed people no speaker has are offered as one-click suggestions on the speakers without a name;
+- a listed name never goes to two speakers; names you set and your microphone's speaker are never changed.
+The Speakers panel lists the changes with **Keep**, **Revert** and **Revert all**; a change you reverted stays
+reverted when you identify again.
+
+**Attendees.** Each meeting has its own attendee list, separate from the speakers but kept in step with them:
+everyone in the participants list, every named speaker (linked to their row in the list), and people you add. For
+each: whether they spoke, when they first appeared in the list and first spoke (play links). Renaming a speaker
+renames their attendee row, and renaming an attendee who spoke renames the speaker. Attendees who spoke can't be
+removed (move their lines instead). Your changes are kept in `data/attendees/<meeting>.json` and never changed by the
+app. Meeting notes list every attendee, including those who didn't speak, and the meeting check uses them to find
+earlier meetings with the same people.
+
+**Voice fingerprints** (Settings → Meetings, on by default) are biometric data, kept only on this Mac. One is saved when you confirm a name, or automatically when a name was read as text on 3+ of the speaker's turns (≥70% of them) and no other speaker shares it. **Make fingerprints for older meetings** computes them from the recordings with pyannote's embedding model only (no new transcript).
+
+Where biometric data is stored (all inside the project's `data/` folder unless you moved it with the env vars):
+
+| What | Where | Contents | Deleted by |
+|---|---|---|---|
+| Each meeting's speaker fingerprints | `data/transcripts/<meeting>.json`, field `speaker_embeddings` (`TRANSCRIPTS_DIR`) | one 256-number vector per speaker label of that recording | **Forget this meeting's voice fingerprints** (Speakers panel), or deleting the meeting |
+| People's fingerprints | `data/memory/memory.json`, each person's `voiceprints` (`APP_DATA_DIR/memory`) | up to 8 vectors per person, each with the meeting and speaker it came from and its source (you, screen, cloud review, microphone) | per person in Memory → People (**Forget voice**), per meeting (above, and deleting a meeting), all in Settings → Meetings |
+| The recordings themselves | the uploads and watch folders (`~/Meetings`), Quorum's own `.mov` recordings | voices and video (faces) | deleting a meeting with "also delete the recording" (uploads only; watch-folder files are never deleted) |
+| Frame crops (debugging) | `data/transcripts/screen-debug/` | crops of the highlighted tiles | only made when **Keep frame crops** is on; delete the folder |
+| Working files | `data/transcripts/.work/`, `.recordings/` (live frames and audio during a call) | audio, frames | deleted when the job or recording finishes |
+
+Never sent anywhere: fingerprints and frames don't go to cloud models (the cloud review gets text only), the memory
+export to claude.ai leaves voice vectors out, and the transcriber listens on 127.0.0.1 only.
 
 **Cloud review.** Names are always identified on this Mac first. If the selected chat model is a cloud model (GAIA, Claude, ChatGPT, …) and the review is on:
 - **What it gets:** the transcript lines, the local suggestions with their evidence, names seen on screen, and people from memory who may be in this meeting (name, aliases, role, team, projects only).
@@ -332,6 +447,12 @@ It handles screen sharing (frames are skipped), gallery and speaker view, severa
 - **What it may change:** names and roles you didn't set yourself. Every change must cite transcript lines (or match the name on that speaker's tile); anything else is ignored.
 - **Routing:** in Auto mode you're asked first ("Send speaker names and the transcript to Claude Opus 5.5 for review?"); in Cloud mode it runs with a one-time notice per provider; Local mode, confidential projects (default mode Local) and meetings attached to confidential chats skip it.
 - **Changes:** the Speakers panel lists each one (local name → cloud name, reason, links to the cited lines) with **Keep**, **Revert** and **Revert all**. A changed name's voice is remembered only after you keep it. If the review fails (offline, bad key, rate limit, invalid JSON after one retry), the local names stay and a notice says why.
+- **Spelling first:** the same review first fixes misspelled or misheard words in the lines it was sent (names,
+  product terms, acronyms), preferring names and terms Quorum knows (memory, projects, on-screen names, attendees),
+  then reviews the names on the corrected text. Each fix is checked: only a few words may change, each changed word
+  must sound like the one it replaces or be a known name or term, and lines from your microphone are never changed.
+  The fixes appear in the Corrections tab (from the cloud model, with its reason), with **Keep**, **Revert** and
+  **Revert all**; your own edits of a line always win.
 
 ## Memory
 Settings → Memory shows one store (`data/memory/memory.json`) in the shape of a claude.ai memory export:

@@ -75,3 +75,14 @@ def no_real_ollama_window_check(monkeypatch):
     import llm_backends
 
     monkeypatch.setattr(llm_backends, "_loaded_window", lambda model: None)
+
+
+@pytest.fixture(autouse=True)
+def no_real_meeting_files(tmp_path, monkeypatch):
+    """The API's per-meeting files (attendee edits, labels, summaries) go to the test's folder, never ./data."""
+    import sys
+
+    main = sys.modules.get("api.main")
+    if main is not None:
+        for name, folder in (("ATTENDEES_DIR", "attendees"), ("LABELS_DIR", "labels"), ("SUMMARIES_DIR", "summaries")):
+            monkeypatch.setattr(main, name, tmp_path / folder)

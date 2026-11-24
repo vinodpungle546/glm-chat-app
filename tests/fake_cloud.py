@@ -6,7 +6,8 @@ Used in-process by tests/test_cloud_providers.py (FakeCloud) and by the Playwrig
 Keys: "sk-ant-test" (Anthropic), "sk-openai-test" (OpenAI). Special model names trigger errors:
   *-missing → 404, *-limit → 429, *-busy → 529 (Anthropic) / 503 (OpenAI), claude-refuse → refusal.
 A request whose last user message asks for a speaker review ("review speaker identification")
-gets a JSON review reply (see review_reply).
+gets a JSON review reply (see review_reply); the review's spelling step ("You proofread a meeting transcript")
+gets the fixes in SPELLING_PLAN (spelling_reply).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ ANTHROPIC_MODELS = [("claude-opus-5-5", "Claude Opus 5.5"), ("claude-sonnet-5-5"
 OPENAI_MODELS = ["gpt-5.5", "gpt-5.5-mini", "text-embedding-3-small", "whisper-1"]
 REQUESTS: list[dict] = []          # every request seen: {"api", "path", "headers", "body"}
 REVIEW_PLAN: dict = {"changes": {}}  # {"SPEAKER_01": {"name", "role", "lines", "reason"}} for review replies
+SPELLING_PLAN: dict = {"fixes": {}}  # {"Kieran": "Ciarán"}: words the spelling step replaces in every line
 
 
 def _last_user(body: dict) -> str:
@@ -53,11 +55,26 @@ def review_reply(body: dict) -> str | None:
     return json.dumps({"speakers": rows})
 
 
+def spelling_reply(body: dict) -> str | None:
+    """The cloud review's spelling step: replaces the words in SPELLING_PLAN in the lines it was sent."""
+    system = body.get("system") or next((m.get("content") for m in body.get("messages") or [] if m.get("role") == "system"), "")
+    if "You proofread a meeting transcript" not in str(system):
+        return None
+    fixes = []
+    for n, text in re.findall(r"^#(\d+) \[[^\]]*\] [^:]*: (.*)$", _last_user(body), flags=re.M):
+        new = text
+        for wrong, right in SPELLING_PLAN["fixes"].items():
+            new = re.sub(rf"\b{re.escape(wrong)}\b", right, new)
+        if new != text:
+            fixes.append({"line": int(n), "text": new, "reason": "misheard name"})
+    return json.dumps({"fixes": fixes})
+
+
 def reply_text(body: dict) -> str:
-    """What the fake model answers: a speaker-review reply when asked for one (see REVIEW_PLAN), otherwise 'Fake
-    reply about: <question>'.
+    """What the fake model answers: a speaker-review or spelling reply when asked for one (see REVIEW_PLAN and
+    SPELLING_PLAN), otherwise 'Fake reply about: <question>'.
     """
-    return review_reply(body) or f"Fake reply about: {_last_user(body)[:60]}"
+    return review_reply(body) or spelling_reply(body) or f"Fake reply about: {_last_user(body)[:60]}"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -224,6 +241,7 @@ class FakeCloud:
         """Starts the fake server on a free port with a clean request log; returns its URL."""
         REQUESTS.clear()
         REVIEW_PLAN["changes"] = {}
+        SPELLING_PLAN["fixes"] = {}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         return f"http://127.0.0.1:{self.server.server_address[1]}"

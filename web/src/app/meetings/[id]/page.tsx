@@ -4,21 +4,75 @@
  * Route '/meetings/<id>': one meeting. The transcript on the left, the Speakers and Summary panels on the
  * right (as tabs on narrow screens).
  */
+import * as Menu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowLeft, Download, FilePlus2, MessageSquare, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, Copy, Download, FilePlus2, MessageSquare, Search, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/components/app-provider";
-import { AddTranscriptDialog, CorrectionsPanel, MarkedText, useCorrectionJobs } from "@/components/meetings/corrections";
+import {
+  AddTranscriptDialog, type CorrectionModel, CorrectionsPanel, MarkedText, useCorrectionJobs, useCorrectionReview,
+} from "@/components/meetings/corrections";
 import { AlertsView } from "@/components/meetings/meeting-check";
 import { MeetingPlayer, playFrom } from "@/components/meetings/player";
 import { SpeakersPanel } from "@/components/meetings/speakers-panel";
 import { SummaryPanel } from "@/components/meetings/summary-panel";
+import { EditBar, type EditContext, EditLine, useTranscriptEdits, VoiceQuestion } from "@/components/meetings/transcript-edit";
 import { Badge, Button, Callout, ConfirmDialog, Input } from "@/components/ui";
-import { api, API_URL, type Job, type Session, type Transcript } from "@/lib/api";
+import { api, type Job, type Session, type Transcript } from "@/lib/api";
 import { clsx, fmtDuration, fmtTime, shortDate, speakerColor } from "@/lib/format";
+import { download, type ExportFormat, fileName, FORMATS, lines, render } from "@/lib/transcript-export";
+
+const menuItem = "flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] outline-none data-[highlighted]:bg-hover";
+
+/** Copy the transcript (as shown: corrected words, speaker names) in a few formats, or download it as a file. */
+function ExportTranscript({ transcript }: { transcript: Transcript }) {
+  const copy = async (format: ExportFormat) => {
+    const text = render(transcript, format);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Transcript copied", { description: `${transcript.segments.length} lines · ${FORMATS.find((f) => f.format === format)?.label}` });
+    } catch (err) {
+      toast.error("Couldn't copy", { description: (err as Error).message });
+    }
+  };
+  const save = (format: ExportFormat) => {
+    const f = FORMATS.find((x) => x.format === format)!;
+    download(render(transcript, format), fileName(transcript.title, f.ext), f.type);
+  };
+  return (
+    <>
+      <Menu.Root>
+        <Menu.Trigger asChild>
+          <Button variant="secondary" data-testid="copy-transcript"><Copy className="h-4 w-4" /> Copy <ChevronDown className="h-3 w-3" /></Button>
+        </Menu.Trigger>
+        <Menu.Portal>
+          <Menu.Content align="end" className="z-50 min-w-56 rounded-xl border border-border bg-surface p-1 shadow-card">
+            {FORMATS.filter((f) => ["plain", "timed", "markdown"].includes(f.format)).map((f) => (
+              <Menu.Item key={f.format} className={menuItem} onSelect={() => void copy(f.format)} data-testid={`copy-${f.format}`}>{f.label}</Menu.Item>
+            ))}
+          </Menu.Content>
+        </Menu.Portal>
+      </Menu.Root>
+      <Menu.Root>
+        <Menu.Trigger asChild>
+          <Button variant="secondary" aria-label="Download the transcript" data-testid="download-transcript"><Download className="h-4 w-4" /> Download <ChevronDown className="h-3 w-3" /></Button>
+        </Menu.Trigger>
+        <Menu.Portal>
+          <Menu.Content align="end" className="z-50 min-w-56 rounded-xl border border-border bg-surface p-1 shadow-card">
+            {FORMATS.map((f) => (
+              <Menu.Item key={f.format} className={menuItem} onSelect={() => save(f.format)} data-testid={`download-${f.format}`}>
+                {f.label.replace(/ \(.*\)$/, "")} <span className="ml-auto font-mono text-xs text-faint">.{f.ext}</span>
+              </Menu.Item>
+            ))}
+          </Menu.Content>
+        </Menu.Portal>
+      </Menu.Root>
+    </>
+  );
+}
 
 /**
  * True when the window is at least 1024 px wide (then the panels sit next to the transcript instead of in
@@ -41,7 +95,7 @@ function useIsDesktop() {
  * when a notes link or the 'quorum:seek' event asks for a time or line number. A line's time plays the recording
  * from there; the line being played ('quorum:playing') is marked.
  */
-function Segments({ transcript, query }: { transcript: Transcript; query: string }) {
+function Segments({ transcript, query, edit }: { transcript: Transcript; query: string; edit?: EditContext }) {
   const [focus, setFocus] = useState<number | null>(null);
   const [heard, setHeard] = useState<number | null>(null);
   useEffect(() => {
@@ -102,12 +156,20 @@ function Segments({ transcript, query }: { transcript: Transcript; query: string
                 {fmtTime(s.start)}
               </button>
             ) : <span />}
-            <div className="min-w-0">
-              {!continued && (
-                <div className="mb-0.5 text-[13px] font-semibold" style={{ color: speakerColor(s.speaker, transcript.speakers) }}>{name}</div>
-              )}
-              <p className="text-[14px] leading-relaxed"><MarkedText text={s.text} spans={marks[String(index)]} changes={changes} /></p>
-            </div>
+            {edit?.editing ? (
+              <EditLine ctx={edit} transcript={transcript} index={index} seg={s} name={name} />
+            ) : (
+              <div className="min-w-0">
+                {!continued && (
+                  <div className="mb-0.5 text-[13px] font-semibold" style={{ color: speakerColor(s.speaker, transcript.speakers) }}>{name}</div>
+                )}
+                <p className="text-[14px] leading-relaxed">
+                  <MarkedText text={s.text} spans={marks[String(index)]} changes={changes} />
+                  {s.edited && <span className="ml-1.5 align-middle text-[10px] font-medium uppercase tracking-wide text-accent" title="You edited this line"
+                                     data-testid="seg-edited">edited</span>}
+                </p>
+              </div>
+            )}
           </li>
         );
       })}
@@ -130,6 +192,7 @@ export default function TranscriptPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [adding, setAdding] = useState(false);
   const [busyTranscriber, setBusyTranscriber] = useState(false);
+  const edits = useTranscriptEdits(id, (t) => setTranscript(t));
   const params = useSearchParams();
   const [tab, setTab] = useState(params.get("tab") === "summary" ? "summary" : "speakers");
 
@@ -150,6 +213,7 @@ export default function TranscriptPage() {
 
   const patch = (p: Partial<Transcript>) => (Object.keys(p).length ? setTranscript((t) => (t ? { ...t, ...p } : t)) : load());
   const reload = useCallback(() => { void load(); }, [load]);
+  const review = useCorrectionReview(id, reload);
 
   const chat = async () => {
     try {
@@ -171,6 +235,7 @@ export default function TranscriptPage() {
   };
 
   const named = useMemo(() => (transcript ? Object.values(transcript.labels).filter((l) => l.name).length : 0), [transcript]);
+  const captions = useMemo(() => (transcript && transcript.timestamps !== false ? lines(transcript) : []), [transcript]);
 
   if (error) {
     return (
@@ -185,16 +250,18 @@ export default function TranscriptPage() {
 
   const transcriptPane = (
     <div className="space-y-3">
-      <MeetingPlayer transcriptId={id} fallbackDuration={transcript.duration} />
+      <MeetingPlayer transcriptId={id} fallbackDuration={transcript.duration} captions={captions} />
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
         <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the transcript" aria-label="Search the transcript" className="h-8 pl-8 text-[13px]" />
       </div>
-      <Segments transcript={transcript} query={query} />
+      <EditBar ctx={edits.ctx} transcript={transcript} />
+      <VoiceQuestion transcript={transcript} ask={edits.voice} onClose={() => edits.setVoice(null)} />
+      <Segments transcript={transcript} query={query} edit={edits.ctx} />
     </div>
   );
   const speakers = <SpeakersPanel transcript={transcript} onChange={patch} busyTranscriber={busyTranscriber} />;
-  const corrections = <CorrectionsPanel transcript={transcript} onChange={reload} onAdd={() => setAdding(true)} />;
+  const corrections = <CorrectionsPanel transcript={transcript} onChange={reload} onAdd={() => setAdding(true)} review={review} />;
   const summary = <SummaryPanel transcript={transcript} onSaved={(s) => patch({ summary: s })} />;
   const seekTo = (seconds: number) => window.dispatchEvent(new CustomEvent("quorum:seek", { detail: { seconds } }));
   const check = (
@@ -227,9 +294,7 @@ export default function TranscriptPage() {
                 <FilePlus2 className="h-4 w-4" /> Add another transcript
               </Button>
             )}
-            <a href={`${API_URL}/api/meetings/transcripts/${id}/markdown`} download={`${transcript.title}.md`}>
-              <Button variant="secondary" aria-label="Download as Markdown"><Download className="h-4 w-4" /> .md</Button>
-            </a>
+            <ExportTranscript transcript={transcript} />
             <Button variant="ghost" aria-label="Delete transcript" onClick={() => setConfirmDelete(true)}><Trash2 className="h-4 w-4" /></Button>
           </div>
         </div>
@@ -270,7 +335,8 @@ export default function TranscriptPage() {
           </Tabs.Root>
         )}
       </div>
-      <CorrectionJobs transcript={transcript} reload={reload} adding={adding} setAdding={setAdding} />
+      <CorrectionJobs transcript={transcript} reload={reload} adding={adding} setAdding={setAdding} onReview={review.start} />
+      {review.dialog}
       <ConfirmDialog open={confirmDelete} onOpenChange={setConfirmDelete} title="Delete transcript?"
                      description="The transcript, its summary and speaker labels are deleted. The recording is kept." onConfirm={remove} />
     </div>
@@ -278,9 +344,17 @@ export default function TranscriptPage() {
 }
 
 /** The "Add another transcript" dialog, and watching a Voice Memos recording being transcribed (reloads after). */
-function CorrectionJobs({ transcript, reload, adding, setAdding }: {
+function CorrectionJobs({ transcript, reload, adding, setAdding, onReview }: {
   transcript: Transcript; reload: () => void; adding: boolean; setAdding: (open: boolean) => void;
+  onReview: (model: CorrectionModel) => void;
 }) {
-  const { watch } = useCorrectionJobs(transcript, reload);
-  return <AddTranscriptDialog open={adding} onOpenChange={setAdding} transcriptId={transcript.id} onDone={reload} onWatch={watch} />;
+  // A model chosen with a Voice Memos recording reviews once the recording is transcribed and applied.
+  const [afterAudio, setAfterAudio] = useState<CorrectionModel>("none");
+  const ready = useCallback(() => {
+    if (afterAudio !== "none") onReview(afterAudio);
+    setAfterAudio("none");
+  }, [afterAudio, onReview]);
+  const { watch } = useCorrectionJobs(transcript, reload, ready);
+  return <AddTranscriptDialog open={adding} onOpenChange={setAdding} transcriptId={transcript.id} onDone={reload}
+                              onWatch={(model) => { setAfterAudio(model); watch(); }} onReview={onReview} />;
 }

@@ -24,6 +24,9 @@ Endpoints
   PUT  /transcripts/{id}/segments    {segments, speaker_names, speaker_source}  speakers guessed
                                      in the app by the local model (original kept for undo)
   POST /transcripts/{id}/undo-speakers  restore the transcript as it was before the guess
+  GET  /transcripts/{id}/media[/{part}]  play the meeting back (picture, call/mic/mixed sound; Range)
+  GET  /transcripts/{id}/recording/candidates  a moved recording, found again by name and length
+  POST /transcripts/{id}/recording   {path}  play the meeting from that copy (cloned into uploads)
   GET  /upload                       upload page (embedded in the app)
   POST /uploads/init  {name, size}   start or resume a chunked upload
   PUT  /uploads/{uid}/chunk/{n}      one 8 MB chunk, streamed to disk
@@ -49,7 +52,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 
-from transcriber import config, correct, live, pipeline, recorder, screen_names, text_import
+from transcriber import config, correct, edits, live, pipeline, recorder, screen_names, text_import
 
 JOBS: dict[str, dict] = {}
 JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
@@ -226,6 +229,10 @@ def recordings() -> list[dict]:
             continue
         found.append((stat.st_mtime, path, stat))
     found.sort(key=lambda item: item[0], reverse=True)
+    by_path = {}  # a recording linked to a meeting later (relinked copy) has another source_id
+    for tid, t in index.items():
+        if t.get("source_path") and os.path.isabs(t["source_path"]):
+            by_path.setdefault(str(Path(t["source_path"]).resolve()), tid)
     items = []
     for mtime, path, stat in found[: config.MAX_RECORDINGS]:
         sid = pipeline.source_id(path)
@@ -235,7 +242,7 @@ def recordings() -> list[dict]:
             "source": "upload" if uploads in path.parents else "folder",
             "size": stat.st_size,
             "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime)),
-            "transcript_id": sid if sid in index else None,
+            "transcript_id": sid if sid in index else by_path.get(str(path)),
         })
     return items
 
@@ -405,12 +412,13 @@ class SpeakerHint(BaseModel):
 
 
 class ScreenOptions(BaseModel):
-    """On-screen names (video only). vision_model: a local Ollama model for frames the text
-    reader can't settle ("" = off); vision_cap: at most this many such frames per meeting."""
+    """On-screen names (video only). vision_model: the local Ollama model that reviews frames of every speaker
+    ("" = none installed); vision_cap: frames it reviews per meeting (None or 0 = 4 per speaker, 12 to 48)."""
     enabled: bool = True
     vision_model: str = Field("", max_length=200)
-    vision_cap: int = Field(screen_names.VISION_CAP, ge=0, le=100)
+    vision_cap: int | None = Field(None, ge=0, le=200)
     debug: bool = False
+    participants: bool = True   # scan the whole recording for the call's participants list
 
 
 class MeetingModels(BaseModel):
@@ -485,7 +493,8 @@ def _queue_transcript_job(tid: str, kind: str, screen: dict | None = None) -> di
                 return job
         job_id = uuid.uuid4().hex[:12]
         duration = float(transcript.get("duration") or 0)
-        cost = (screen_names.estimate_seconds(duration, (screen or {}).get("vision_cap", 0))["high"]
+        frames = screen_names.review_budget(len(transcript.get("speakers") or []), (screen or {}).get("vision_cap"))
+        cost = (screen_names.estimate_seconds(duration, frames if (screen or {}).get("vision_model") else 0)["high"]
                 if kind == "screen" else duration * 0.02 + 20)
         JOBS[job_id] = {
             "id": job_id, "path": str(src), "name": src.name, "status": "queued", "stage": "queued",
@@ -693,14 +702,19 @@ def media_cache(tid: str) -> Path:
 
 
 def _recording_of(transcript: dict) -> Path | None:
-    """The transcript's recording, when it's still in the watch or uploads folder (else None)."""
+    """The transcript's recording when the file still exists (else None). The saved `source_path` was written by
+    this service from a path it checked when it transcribed (or relinked) the file, so it stays playable after the
+    watch folder changes; paths from the browser still go through safe_media_path."""
     raw = transcript.get("source_path")
     if not raw or transcript.get("source_type") == "text":
         return None
-    try:
-        return safe_media_path(raw)
-    except HTTPException:
-        return None
+    if not os.path.isabs(raw):  # very old transcripts: relative to the watch folder
+        try:
+            return safe_media_path(raw)
+        except HTTPException:
+            return None
+    path = Path(raw)
+    return path if path.suffix.lower() in config.MEDIA_SUFFIXES and path.is_file() else None
 
 
 def media_layout(src: Path) -> dict:
@@ -761,7 +775,8 @@ def media_info(tid: str) -> dict:
         return {"available": False, "reason": "text", "message": "This transcript was imported from text."}
     if src is None:
         return {"available": False, "reason": "missing", "path": transcript.get("source_path"),
-                "message": "The recording isn't in the meetings or uploads folder any more."}
+                "name": _recording_names(transcript)[0] if _recording_names(transcript) else None,
+                "message": "The recording isn't where it was transcribed from any more."}
     try:
         layout = media_layout(src)
     except (subprocess.CalledProcessError, ValueError) as exc:
@@ -790,6 +805,179 @@ def media_part(tid: str, part: str) -> FileResponse:
     if part == "mix" and layout["audio_tracks"] < 2:
         raise HTTPException(404, "This recording has a single sound track.")
     return FileResponse(prepare_part(tid, src, part, layout), media_type="audio/mp4")
+
+
+# A recording that moved (an upload copy deleted, the original still on the Desktop) can be found again by name.
+HOME_FOLDERS = ("Desktop", "Downloads", "Movies", "Documents")
+HOME_DEPTH = 1  # subfolder levels searched in those folders
+MAX_CANDIDATES = 20
+
+
+def _home_folders() -> list[Path]:
+    """The usual places a recording lives on a Mac (tests point these at tmp_path)."""
+    return [Path.home() / name for name in HOME_FOLDERS]
+
+
+def _name_key(name: str) -> str:
+    """A file name compared loosely: Unicode-normalised, macOS's narrow spaces ("8.02.21 PM") as plain spaces."""
+    import unicodedata
+    name = unicodedata.normalize("NFC", name).replace(" ", " ").replace("\xa0", " ")
+    return name.casefold()
+
+
+def _recording_names(transcript: dict) -> list[str]:
+    """The names the meeting's recording had: its original name and the name it was transcribed under."""
+    names = []
+    for raw in (transcript.get("source_name"), Path(transcript.get("source_path") or "").name):
+        if raw and Path(raw).suffix.lower() in config.MEDIA_SUFFIXES and raw not in names:
+            names.append(raw)
+    return names
+
+
+def _search_folders() -> list[tuple[Path, int, str]]:
+    """(folder, depth, label) searched for a moved recording: the home folders, then the watch folders and uploads."""
+    folders, seen = [], set()
+    entries = [(f, HOME_DEPTH, f.name) for f in _home_folders()]
+    entries += [(config.MEETINGS_DIR, config.MAX_SCAN_DEPTH, "watch folder"),
+                (config.DEFAULT_MEETINGS_DIR, config.MAX_SCAN_DEPTH, "meetings folder"),
+                (config.UPLOADS_DIR, 0, "uploads")]
+    for folder, depth, label in entries:
+        try:
+            key = folder.resolve()
+        except OSError:
+            continue
+        if key not in seen:
+            seen.add(key)
+            folders.append((key, depth, label))
+    return folders
+
+
+def _named_files(root: Path, wanted: set[str], depth: int):
+    """Files in `root` (and `depth` levels of subfolders) whose name is in `wanted`; hidden files, symlinks and
+    folders macOS won't let us read are skipped."""
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.startswith("."):
+            continue
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                if depth > 0:
+                    yield from _named_files(Path(entry.path), wanted, depth - 1)
+            elif entry.is_file(follow_symlinks=False) and _name_key(entry.name) in wanted:
+                yield Path(entry.path)
+        except OSError:
+            continue
+
+
+def _same_length(duration: float | None, meeting: float | None) -> bool:
+    """Whether a file is as long as the meeting (within 2 s or 1%); True when the meeting's length isn't known."""
+    if not meeting:
+        return True
+    return duration is not None and abs(duration - meeting) <= max(2.0, 0.01 * meeting)
+
+
+def _clock(seconds: float | None) -> str:
+    """12:03 or 1:02:03."""
+    total = int(round(seconds or 0))
+    h, rest = divmod(total, 3600)
+    return f"{h}:{rest // 60:02d}:{rest % 60:02d}" if h else f"{rest // 60}:{rest % 60:02d}"
+
+
+def find_recording(transcript: dict) -> list[dict]:
+    """Files on this Mac with the meeting recording's name, matched by length (`match`), best first."""
+    wanted = {_name_key(n) for n in _recording_names(transcript)}
+    if not wanted or transcript.get("source_type") == "text":
+        return []
+    found: dict[Path, str] = {}
+    for folder, depth, label in _search_folders():
+        for path in _named_files(folder, wanted, depth):
+            found.setdefault(path.resolve(), label)
+            if len(found) >= MAX_CANDIDATES:
+                break
+    items = []
+    for path, label in found.items():
+        try:
+            stat = path.stat()
+            duration = pipeline.probe_media(path)["duration"]
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            stat, duration = None, None
+        if stat is None:
+            continue
+        items.append({"path": str(path), "name": path.name, "folder": label, "size": stat.st_size,
+                      "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
+                      "duration": duration, "match": _same_length(duration, transcript.get("duration"))})
+    items.sort(key=lambda c: (not c["match"], c["folder"] == "uploads"))
+    return items
+
+
+@app.get("/transcripts/{tid}/recording/candidates")
+def media_candidates(tid: str) -> dict:
+    """GET /transcripts/{id}/recording/candidates: where the meeting's recording might be now (same name; `match` when
+    it is as long as the meeting). Searches Desktop, Downloads, Movies, Documents and the meetings folders."""
+    transcript = _load_transcript(tid)
+    return {"candidates": find_recording(transcript), "names": _recording_names(transcript),
+            "folders": [label for _, _, label in _search_folders()], "duration": transcript.get("duration")}
+
+
+def _unique_upload(name: str) -> Path:
+    """A free name in the uploads folder: "Name.mov", else "Name 2.mov", ..."""
+    config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    target = config.UPLOADS_DIR / name
+    stem, suffix, n = Path(name).stem, Path(name).suffix, 2
+    while target.exists():
+        target = config.UPLOADS_DIR / f"{stem} {n}{suffix}"
+        n += 1
+    return target
+
+
+class RelinkBody(BaseModel):
+    """POST /transcripts/{id}/recording body: the file to play this meeting from."""
+    path: str = Field(..., min_length=1, max_length=4096)
+
+
+@app.post("/transcripts/{tid}/recording")
+def relink_recording(tid: str, body: RelinkBody) -> dict:
+    """POST /transcripts/{id}/recording: plays the meeting from another copy of its recording: one found by
+    recording/candidates, or a file just uploaded. It must be as long as the meeting. A file outside the meetings
+    folders is cloned into uploads (APFS clone: instant, no extra space, and it survives deleting the original);
+    if cloning isn't possible it's used where it is."""
+    transcript = _load_transcript(tid)
+    if transcript.get("source_type") == "text":
+        raise HTTPException(400, "This transcript was imported from text; it has no recording.")
+    raw = Path(os.path.expanduser(body.path))
+    if not raw.is_absolute():
+        raise HTTPException(400, "Give the recording's full path.")
+    path = raw.resolve()
+    uploads = config.UPLOADS_DIR.resolve()
+    in_roots = any(root in path.parents for root in media_roots())
+    if not in_roots and str(path) not in {c["path"] for c in find_recording(transcript)}:
+        raise HTTPException(400, "Choose one of the recordings found for this meeting, or upload it.")
+    if not path.is_file():
+        raise HTTPException(404, "Recording not found.")
+    if path.suffix.lower() not in config.MEDIA_SUFFIXES:
+        raise HTTPException(400, f"Unsupported file type: {path.suffix}")
+    duration = _probe(path)["duration"]
+    if not _same_length(duration, transcript.get("duration")):
+        raise HTTPException(409, f"This file is {_clock(duration)} long; the meeting is "
+                                 f"{_clock(transcript.get('duration'))}. It looks like a different recording.")
+    target, copied = path, False
+    if not in_roots:
+        dest = _unique_upload(path.name)
+        result = subprocess.run(["cp", "-c", str(path), str(dest)], capture_output=True, text=True)
+        if result.returncode == 0 and dest.is_file():
+            target, copied = dest, True
+        else:
+            dest.unlink(missing_ok=True)  # another volume: play it from where it is
+    with _CORRECT_LOCK:
+        transcript = _load_transcript(tid)
+        transcript["source_path"] = str(target)
+        transcript["relinked_at"] = datetime.now().isoformat(timespec="seconds")
+        pipeline.save_transcript(transcript)
+    shutil.rmtree(media_cache(tid), ignore_errors=True)
+    return {**media_info(tid), "linked": str(target), "copied": copied, "in_uploads": uploads in target.parents}
 
 
 # ---------------------------------------------------------------------------
@@ -845,10 +1033,23 @@ def ref_summary(ref: dict) -> dict:
 _CORRECT_LOCK = threading.Lock()
 
 
+LAYER_ORDER = ("review", "cloud_review")  # model fixes on top of the engine's: the chosen model's review, the
+#                                         cloud review's spelling fixes
+
+
+def model_layers(correction: dict) -> dict[str, dict]:
+    """The models' fixes by source (older transcripts kept one review under "model")."""
+    layers = dict(correction.get("layers") or {})
+    if correction.get("model") and "review" not in layers:
+        layers["review"] = correction["model"]
+    return {k: v for k, v in layers.items() if v and v.get("changes")}
+
+
 def apply_corrections(tid: str, known_terms: list[str] | None = None, reapply: bool = False) -> dict:
-    """Recomputes the correction from the original segments with every ready reference (and the reverted
-    changes), saves the transcript and returns its `correction`. After Undo all nothing is applied until
-    `reapply` (adding a source, or Apply again)."""
+    """Rebuilds the transcript from its original segments: the corrections from every ready reference (minus the
+    reverted changes), the models' fixes (model review, cloud spelling review), then your own edits, which always
+    win. Saves it and returns its `correction`. After Undo all the corrections aren't applied until `reapply`
+    (adding a source, or Apply again); your edits still are."""
     with _CORRECT_LOCK:
         transcript = _load_transcript(tid)
         previous = transcript.get("correction") or {}
@@ -857,33 +1058,125 @@ def apply_corrections(tid: str, known_terms: list[str] | None = None, reapply: b
         undone = previous.get("undone", False) and not reapply
         refs = load_refs(tid)
         ready = [r for r in refs if r.get("status") == "ready"]
+        layers = model_layers(previous)
+        ops = (transcript.get("edits") or {}).get("ops") or []
+        fixed = set(transcript.get("confirmed_speakers") or {})
+        reverted = set(previous.get("reverted", []))
         original = (transcript.get("before_correction") or {}).get("segments") or transcript["segments"]
-        if not ready or undone:
-            transcript["segments"] = original
-            transcript.pop("before_correction", None)
-            result = {"segments": original, "changes": [], "refs": [], "marks": {}, "names": {},
-                      "stats": {"words": 0, "turns": 0, "names": 0, "applied_refs": 0}}
+        if ready and not undone:
+            result = correct.correct(original, ready, pipeline.load_words(tid), known_terms, fixed, reverted)
         else:
-            result = correct.correct(original, ready, pipeline.load_words(tid), known_terms,
-                                     set(transcript.get("confirmed_speakers") or {}), set(previous.get("reverted", [])))
+            result = {"segments": [dict(s) for s in original], "changes": [], "refs": [], "marks": {}, "names": {},
+                      "sentences": [], "stats": {"words": 0, "turns": 0, "names": 0, "applied_refs": 0}}
+        if not undone:
+            for source in LAYER_ORDER:
+                if source in layers:
+                    correct.apply_model_changes(result, layers[source], reverted, fixed)
+        final, origin, state = edits.apply(result["segments"], ops)
+        if ops:  # marks and line numbers of the corrections follow your splits and merges
+            new_index = {old: new for new, old in enumerate(origin) if old is not None}
+            result["marks"] = {str(new_index[int(k)]): v for k, v in result["marks"].items() if int(k) in new_index}
+            for item in result["changes"] + result.get("sentences", []):
+                if item.get("seg") is not None:
+                    item["seg"] = new_index.get(item["seg"])
+        if ready or layers or ops:
             transcript["before_correction"] = {"segments": original}
-            transcript["segments"] = result["segments"]
+        else:
+            transcript.pop("before_correction", None)
+        transcript["segments"] = final
+        if ops:
+            transcript["edits"] = {"ops": ops, "state": state}
+        else:
+            transcript.pop("edits", None)
         transcript["speakers"] = pipeline.speaker_order(transcript["segments"])
         found = {r["id"]: r for r in result["refs"]}
         correction = {
             "refs": [dict(ref_summary(r), **{k: v for k, v in found.get(r["id"], {}).items() if k not in ("name",)})
                      for r in refs],
             "changes": result["changes"], "marks": result["marks"], "names": result["names"],
-            "stats": result["stats"], "reverted": previous.get("reverted", []), "known_terms": known_terms,
-            "undone": undone, "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "sentences": result.get("sentences", []), "model": layers.get("review"), "layers": layers,
+            "stats": result["stats"], "reverted": previous.get("reverted", []), "kept": previous.get("kept", []),
+            "known_terms": known_terms, "undone": undone, "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
-        if refs:
+        if refs or layers:
             transcript["correction"] = correction
         else:
             transcript.pop("correction", None)
         transcript["updated_at"] = correction["updated_at"]
         pipeline.save_transcript(transcript)
         return correction
+
+
+class ModelChange(BaseModel):
+    """One sentence fix a model proposed (validated by the app): the line, what it read, and the new text and/or
+    speaker label."""
+    line: int = Field(ge=0)
+    before: str = Field(max_length=20_000)
+    text: str | None = Field(None, max_length=20_000)
+    speaker: str | None = Field(None, max_length=40)
+    speaker_name: str | None = Field(None, max_length=120)
+    reason: str = Field("", max_length=500)
+
+
+class ModelChangesBody(BaseModel):
+    """POST /transcripts/{id}/corrections/model: a model's review of the corrected transcript (`source` review),
+    or the cloud review's spelling fixes (`source` cloud_review, possible without another transcript)."""
+    model: str = Field(max_length=300)
+    label: str = Field("", max_length=200)
+    changes: list[ModelChange] = Field(max_length=2000)
+    source: str = Field("review", pattern=r"^(review|cloud_review)$")
+
+
+@app.post("/transcripts/{tid}/corrections/model")
+def correction_model(tid: str, body: ModelChangesBody) -> dict:
+    """POST /transcripts/{id}/corrections/model: saves a model's fixes (replacing that source's earlier ones) and
+    corrects again with them on top of the engine's corrections."""
+    transcript = _load_transcript(tid)
+    if body.source == "review" and not transcript.get("correction"):
+        raise HTTPException(409, "Add another transcript first: the model reviews the corrections.")
+    speakers = set(transcript.get("speakers") or [])
+    changes = []
+    for ch in body.changes:
+        if ch.speaker and ch.speaker not in speakers:
+            raise HTTPException(400, f"Unknown speaker {ch.speaker}.")
+        data = ch.model_dump()
+        data["id"] = correct.change_id(body.source, ch.line, ch.line + 1, f"{ch.text or ''}|{ch.speaker or ''}")
+        changes.append(data)
+    with _CORRECT_LOCK:
+        transcript = _load_transcript(tid)
+        correction = transcript.setdefault("correction", {})
+        layers = model_layers(correction)
+        layers[body.source] = {"model": body.model, "label": body.label, "changes": changes, "source": body.source,
+                               "at": datetime.now().isoformat(timespec="seconds")}
+        correction["layers"], correction["model"] = layers, layers.get("review")
+        pipeline.save_transcript(transcript)
+    return apply_corrections(tid)
+
+
+@app.delete("/transcripts/{tid}/corrections/model")
+def correction_model_clear(tid: str, source: str = "review") -> dict:
+    """DELETE /transcripts/{id}/corrections/model?source=review|cloud_review: drops that model's fixes (the
+    engine's corrections stay)."""
+    with _CORRECT_LOCK:
+        transcript = _load_transcript(tid)
+        correction = transcript.get("correction")
+        if correction:
+            layers = model_layers(correction)
+            layers.pop(source, None)
+            correction["layers"], correction["model"] = layers, layers.get("review")
+            pipeline.save_transcript(transcript)
+    return apply_corrections(tid)
+
+
+@app.get("/transcripts/{tid}/corrections/context")
+def correction_context(tid: str) -> dict:
+    """GET /transcripts/{id}/corrections/context: each line of the (corrected) transcript with what the other
+    transcripts say there, for a model's review."""
+    transcript = _load_transcript(tid)
+    ready = [r for r in load_refs(tid) if r.get("status") == "ready"]
+    return {"lines": correct.line_context(transcript["segments"], ready),
+            "speakers": transcript.get("speakers") or [],
+            "fixed": sorted(transcript.get("confirmed_speakers") or {})}
 
 
 class TextRefBody(BaseModel):
@@ -976,17 +1269,23 @@ def delete_reference(tid: str, rid: str) -> dict:
 
 @app.post("/transcripts/{tid}/corrections/{cid}/{action}")
 def correction_action(tid: str, cid: str, action: str) -> dict:
-    """POST /transcripts/{id}/corrections/{change}/revert|restore: undoes or brings back one change."""
-    if action not in ("revert", "restore") or not re.fullmatch(r"[0-9a-f]{10}", cid):
+    """POST /transcripts/{id}/corrections/{change}/revert|restore|keep: undoes, brings back or keeps (marks as
+    checked) one change."""
+    if action not in ("revert", "restore", "keep") or not re.fullmatch(r"[0-9a-f]{10}", cid):
         raise HTTPException(404, "No such action.")
     with _CORRECT_LOCK:
         transcript = _load_transcript(tid)
         correction = transcript.get("correction")
         if not correction:
             raise HTTPException(404, "This transcript has no corrections.")
-        reverted = set(correction.get("reverted", []))
-        (reverted.add if action == "revert" else reverted.discard)(cid)
-        correction["reverted"] = sorted(reverted)
+        reverted, kept = set(correction.get("reverted", [])), set(correction.get("kept", []))
+        if action == "keep":
+            kept.add(cid)
+            reverted.discard(cid)
+        else:
+            (reverted.add if action == "revert" else reverted.discard)(cid)
+            kept.discard(cid)
+        correction["reverted"], correction["kept"] = sorted(reverted), sorted(kept)
         pipeline.save_transcript(transcript)
     return apply_corrections(tid)
 
@@ -1008,6 +1307,86 @@ def reapply_corrections(tid: str, body: TermsBody) -> dict:
     """POST /transcripts/{id}/corrections/apply: applies the corrections again (after Undo all, or with new known
     names), keeping changes reverted one by one."""
     return apply_corrections(tid, body.known_terms, reapply=True)
+
+
+class EditPart(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    speaker: str = Field(pattern=r"^[A-Za-z0-9_]{1,40}$")
+
+
+class EditBody(BaseModel):
+    """POST /transcripts/{id}/edits: one edit of yours. `lines`: the line numbers (0-based) it applies to, as you
+    saw them; `text` for a wording change or a merge; `speaker` for a reassignment or merge; `parts` for a split
+    (the words of each part, in order, and who said it)."""
+    kind: str = Field(pattern=r"^(text|speaker|split|merge)$")
+    lines: list[int] = Field(min_length=1, max_length=5000)
+    text: str | None = Field(None, max_length=20_000)
+    speaker: str | None = Field(None, pattern=r"^[A-Za-z0-9_]{1,40}$")
+    parts: list[EditPart] | None = Field(None, min_length=2, max_length=10)
+
+
+def edit_op(transcript: dict, body: EditBody) -> dict:
+    """The stored operation for an edit, checked against the lines as they are now (edits.make_op)."""
+    try:
+        return edits.make_op(transcript["segments"], body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _edit_result(tid: str) -> dict:
+    transcript = _load_transcript(tid)
+    return {"segments": transcript["segments"], "speakers": transcript.get("speakers") or [],
+            "edits": transcript.get("edits") or {"ops": [], "state": {}}, "correction": transcript.get("correction")}
+
+
+@app.post("/transcripts/{tid}/edits")
+def add_edit(tid: str, body: EditBody) -> dict:
+    """POST /transcripts/{id}/edits: saves one edit of yours and rebuilds the transcript (your edits win)."""
+    with _CORRECT_LOCK:
+        transcript = _load_transcript(tid)
+        op = edit_op(transcript, body)
+        transcript.setdefault("edits", {"ops": []}).setdefault("ops", []).append(op)
+        if "before_correction" not in transcript:
+            transcript["before_correction"] = {"segments": transcript["segments"]}
+        pipeline.save_transcript(transcript)
+    apply_corrections(tid)
+    return dict(_edit_result(tid), op=op)
+
+
+@app.delete("/transcripts/{tid}/edits/{op_id}")
+def undo_edit(tid: str, op_id: str) -> dict:
+    """DELETE /transcripts/{id}/edits/{op}: undoes one edit of yours."""
+    with _CORRECT_LOCK:
+        transcript = _load_transcript(tid)
+        ops = (transcript.get("edits") or {}).get("ops") or []
+        if not any(o["id"] == op_id for o in ops):
+            raise HTTPException(404, "No such edit.")
+        transcript["edits"]["ops"] = [o for o in ops if o["id"] != op_id]
+        pipeline.save_transcript(transcript)
+    apply_corrections(tid)
+    return _edit_result(tid)
+
+
+@app.delete("/transcripts/{tid}/edits")
+def undo_all_edits(tid: str) -> dict:
+    """DELETE /transcripts/{id}/edits: undoes all your edits."""
+    with _CORRECT_LOCK:
+        transcript = _load_transcript(tid)
+        if transcript.get("edits"):
+            transcript["edits"]["ops"] = []
+            pipeline.save_transcript(transcript)
+    apply_corrections(tid)
+    return _edit_result(tid)
+
+
+@app.delete("/transcripts/{tid}/voiceprints")
+def forget_voiceprints(tid: str) -> dict:
+    """DELETE /transcripts/{id}/voiceprints: removes this transcript's voice fingerprints (biometric data)."""
+    transcript = _load_transcript(tid)
+    count = len(transcript.pop("speaker_embeddings", None) or {})
+    transcript.pop("voiceprints_backfilled", None)
+    pipeline.save_transcript(transcript)
+    return {"deleted": count}
 
 
 class ImportBody(BaseModel):
@@ -1091,6 +1470,7 @@ def replace_segments(tid: str, body: GuessedSegments) -> dict:
     if "before_correction" in transcript:  # corrections were made on the old segments: start again from these
         transcript.pop("before_correction")
         transcript.pop("correction", None)
+    transcript.pop("edits", None)  # so were your edits
     if "before_speaker_guess" not in transcript:  # keep the very first version for undo
         transcript["before_speaker_guess"] = {
             k: transcript.get(k) for k in ("segments", "speakers", "speaker_names", "diarization")}

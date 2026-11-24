@@ -94,6 +94,11 @@ def read_screen_names(transcript_id: str, screen: dict | None = None) -> dict:
                  timeout=30).json()
 
 
+def forget_voiceprints(transcript_id: str) -> dict:
+    """Deletes a transcript's own voice fingerprints (its speakers' vectors)."""
+    return _call("DELETE", f"/transcripts/{transcript_id}/voiceprints", timeout=30).json()
+
+
 def backfill_voiceprints(transcript_id: str) -> dict:
     """Queue voice fingerprints for an older transcript (pyannote embeddings only)."""
     return _call("POST", f"/transcripts/{transcript_id}/voiceprints", timeout=30).json()
@@ -136,6 +141,18 @@ def media_info(transcript_id: str) -> dict:
     return _call("GET", f"/transcripts/{transcript_id}/media", timeout=30).json()
 
 
+def recording_candidates(transcript_id: str) -> dict:
+    """Where a meeting's moved recording might be now: {candidates: [{path, name, folder, size, modified,
+    duration, match}], names, folders, duration}. Probing the files can take a few seconds."""
+    return _call("GET", f"/transcripts/{transcript_id}/recording/candidates", timeout=120).json()
+
+
+def relink_recording(transcript_id: str, path: str) -> dict:
+    """Plays the meeting from another copy of its recording (a found one, or an upload); returns the new
+    media_info plus {linked, copied}."""
+    return _call("POST", f"/transcripts/{transcript_id}/recording", json={"path": path}, timeout=120).json()
+
+
 def media_stream(transcript_id: str, part: str, range_header: str | None = None) -> requests.Response:
     """A streaming GET of one playback part (video, audio, call, mic, mix), passing the browser's Range header so
     the player can seek. The caller closes the response."""
@@ -170,11 +187,40 @@ def delete_reference(transcript_id: str, ref_id: str) -> dict:
 
 def correction_action(transcript_id: str, action: str, change_id: str | None = None,
                       known_terms: list[str] | None = None) -> dict:
-    """revert/restore one change, undo all, or apply again; returns the correction."""
-    if action in ("revert", "restore"):
+    """revert/restore/keep one change, undo all, or apply again; returns the correction."""
+    if action in ("revert", "restore", "keep"):
         return _call("POST", f"/transcripts/{transcript_id}/corrections/{change_id}/{action}", timeout=120).json()
     body = {"known_terms": known_terms} if action == "apply" else None
     return _call("POST", f"/transcripts/{transcript_id}/corrections/{action}", json=body, timeout=120).json()
+
+
+def correction_context(transcript_id: str) -> dict:
+    """Each line of the corrected transcript with what the other transcripts say there (for a model's review)."""
+    return _call("GET", f"/transcripts/{transcript_id}/corrections/context", timeout=120).json()
+
+
+def correction_model(transcript_id: str, model: str, label: str, changes: list[dict], source: str = "review") -> dict:
+    """Saves a model's validated fixes (`source` review: the corrections review; cloud_review: the cloud review's
+    spelling fixes); returns the correction."""
+    return _call("POST", f"/transcripts/{transcript_id}/corrections/model", timeout=120,
+                 json={"model": model, "label": label, "changes": changes, "source": source}).json()
+
+
+def correction_model_clear(transcript_id: str, source: str = "review") -> dict:
+    """Drops a model's fixes (the engine's corrections stay); returns the correction."""
+    return _call("DELETE", f"/transcripts/{transcript_id}/corrections/model", timeout=120,
+                 params={"source": source}).json()
+
+
+def add_edit(transcript_id: str, edit: dict) -> dict:
+    """Saves one of your edits (wording, speaker, split, merge); returns {segments, speakers, edits, op}."""
+    return _call("POST", f"/transcripts/{transcript_id}/edits", timeout=120, json=edit).json()
+
+
+def undo_edit(transcript_id: str, op_id: str | None = None) -> dict:
+    """Undoes one of your edits (or all of them when `op_id` is None)."""
+    path = f"/transcripts/{transcript_id}/edits" + (f"/{op_id}" if op_id else "")
+    return _call("DELETE", path, timeout=120).json()
 
 
 def markdown(transcript_id: str) -> str:

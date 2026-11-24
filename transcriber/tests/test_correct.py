@@ -254,3 +254,61 @@ def test_whisper_word_pieces_are_joined():
                      {"word": "-no", "start": 1.3, "p": 0.7}, {"word": "-go", "start": 1.4, "p": 0.95}]}
     tokens = correct.reference_tokens(ref)
     assert [(t["text"], t["p"]) for t in tokens] == [("the", 0.9), ("go-no-go", 0.7)]
+
+
+# ---------------------------------------------------------------------------
+# Who said what, and whole sentences
+# ---------------------------------------------------------------------------
+
+def test_a_line_said_by_someone_else_moves_to_their_speaker_but_never_to_or_from_the_microphone():
+    segs, words = quorum()
+    segs[3]["speaker"] = "SPEAKER_00"   # Owen's "Yes, the 14th works…" was given to Priya
+    segs[5]["speaker"] = "SPEAKER_00"   # your "Then I will raise it…" too (but you are the microphone)
+    vtt = text_ref("teams", "other", SCRIPT, names=True)
+    out = correct.correct(segs, [vtt], words, fixed_speakers={"SPEAKER_02"})
+    assert out["segments"][3]["speaker"] == "SPEAKER_01"
+    moved = [c for c in out["changes"] if c["kind"] == "speaker"]
+    assert [(c["from"], c["to"], c["label"], c["seg"]) for c in moved] == [("Priya Sharma", "Owen Hart", "SPEAKER_01", 3)]
+    assert out["segments"][5]["speaker"] == "SPEAKER_00"  # never moved to the microphone speaker
+    assert out["stats"]["speakers"] == 1
+    sentence = next(s for s in out["sentences"] if s["seg"] == 3)
+    assert sentence["speaker_from"] == "Priya Sharma" and sentence["speaker_to"] == "Owen Hart"
+    # Reverting it puts the line back.
+    again = correct.correct(segs, [vtt], words, fixed_speakers={"SPEAKER_02"}, reverted={moved[0]["id"]})
+    assert again["segments"][3]["speaker"] == "SPEAKER_00"
+    assert any(c["id"] == moved[0]["id"] and c.get("reverted") for c in again["changes"])
+
+
+def test_missing_words_inside_a_well_aligned_sentence_are_restored():
+    drop = {(7, k): "" for k in range(9, 14)}  # "and ask the vendor for" missing
+    segs, words = build(SCRIPT, {**QUORUM_MISTAKES, **drop})
+    claude = text_ref("claude", "claude", SCRIPT)
+    out = correct.correct(segs, [claude], words)
+    assert "the rate limit and ask the vendor for a higher quota." in text_of(out)
+    insert = next(c for c in out["changes"] if c["kind"] == "insert")
+    assert insert["to"] == "and ask the vendor for"
+
+
+def test_an_extra_word_is_removed_from_a_well_aligned_sentence():
+    segs, words = build(SCRIPT, {**QUORUM_MISTAKES, (1, 2): "The the"})
+    claude = text_ref("claude", "claude", SCRIPT)
+    out = correct.correct(segs, [claude], words)
+    assert "Priya. The build is green" in text_of(out) and "The the" not in text_of(out)
+
+
+def test_sentences_whisper_merged_or_split_follow_the_reference():
+    segs, words = build(SCRIPT, {**QUORUM_MISTAKES, (8, 3): "ticket", (8, 4): "anything",
+                                 (9, 3): "plan.", (9, 4): "Which"})
+    claude = text_ref("claude", "claude", SCRIPT)
+    out = correct.correct(segs, [claude], words)
+    text = text_of(out)
+    assert "I'll own the ticket. Anything else" in text      # split again
+    assert "Only the rollback plan, which Priya" in text      # joined again
+    punct = [c for c in out["changes"] if c["kind"] == "punct"]
+    assert len(punct) == 2 and out["stats"]["sentences"] == 2
+    line = next(s for s in out["sentences"] if s["after"].startswith("I'll own"))
+    assert line["before"] == "I'll own the ticket anything else for the release checklist?"
+    # A second reference that keeps Quorum's punctuation stops a single one from changing it.
+    other = text_ref("memo", "voice_memos", SCRIPT, {(8, 3): "ticket", (8, 4): "anything"})
+    both = correct.correct(segs, [claude, other], words)
+    assert "the ticket anything else" in text_of(both)

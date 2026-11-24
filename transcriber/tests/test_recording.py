@@ -157,8 +157,8 @@ def test_a_missing_recording_or_a_text_import_is_explained(client):
     pipeline.save_transcript({"id": "fedcba9876543210", "title": "Gone", "source_path": "/elsewhere/gone.mov",
                               "created_at": "2026-11-22T10:00:00", "duration": 5, "speakers": [], "segments": []})
     info = c.get("/transcripts/fedcba9876543210/media").json()
-    assert info == {"available": False, "reason": "missing", "path": "/elsewhere/gone.mov",
-                    "message": "The recording isn't in the meetings or uploads folder any more."}
+    assert info == {"available": False, "reason": "missing", "path": "/elsewhere/gone.mov", "name": "gone.mov",
+                    "message": "The recording isn't where it was transcribed from any more."}
     assert c.get("/transcripts/fedcba9876543210/media/audio").status_code == 404
 
 

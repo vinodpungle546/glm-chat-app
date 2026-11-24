@@ -1,7 +1,8 @@
 /**
  * E2E: playing a meeting back on its page. A line's time plays the recording from there and the line being heard is
  * marked; speed and pause; a call Quorum recorded has separate Call and You volumes. The fake transcriber serves
- * synthetic tones as WAV (the test browser has no H.264, so no video here).
+ * synthetic tones as WAV (the test browser has no H.264, so no video here). A moved recording is found again (or
+ * uploaded) and then plays.
  */
 import { expect, test } from "@playwright/test";
 import { ADMIN, API, open, resetAll } from "./helpers";
@@ -52,4 +53,64 @@ test("a recorded call plays the call and your microphone with their own volume",
   }));
   expect(volumes).toEqual([{ volume: 1, paused: false }, { volume: 0, paused: false }]);
   await player.getByTestId("player-play").click();
+});
+
+test("a moved recording is found again and plays with the transcript's time links", async ({ page, request }) => {
+  const t = await (await request.get(`${API}/api/meetings/transcripts/t-standup`)).json();
+  await request.post(`${ADMIN}/config`, { data: { missing: { "t-standup": [
+    { path: "/Users/me/Desktop/standup.mp4", name: "standup.mp4", folder: "Desktop", size: 52_000_000,
+      modified: "2026-11-18 10:00", duration: t.duration, match: true },
+    { path: "/Users/me/Downloads/old/standup.mp4", name: "standup.mp4", folder: "Downloads", size: 9_000_000,
+      modified: "2026-10-01 09:00", duration: 9, match: false },
+  ] } } });
+  await open(page, "/meetings/t-standup");
+  const box = page.getByTestId("player-unavailable");
+  await expect(box).toContainText("isn't where it was transcribed from");
+  await expect(box.getByTestId("player-candidate")).toContainText("Found in your Desktop: standup.mp4");
+  await expect(box.getByTestId("player-candidate-mismatch")).toContainText("probably another recording");
+  await box.getByTestId("player-relink").click();
+
+  const player = page.getByTestId("player");
+  await expect(player).toBeVisible();
+  await page.locator('[data-seg="1"]').getByTestId("seg-play").click();
+  await expect(player).toHaveAttribute("data-playing", "true");
+  await expect(page.locator('[data-seg="1"]')).toHaveAttribute("data-heard", "true");
+  await player.getByTestId("player-play").click();
+});
+
+test("a recording that isn't on this Mac can be uploaded again; another length is refused", async ({ page, request }) => {
+  await request.post(`${ADMIN}/config`, { data: { missing: { "t-standup": [] } } });
+  await open(page, "/meetings/t-standup");
+  const box = page.getByTestId("player-unavailable");
+  await expect(box.getByTestId("player-not-found")).toBeVisible();
+  await box.getByTestId("player-upload-input").setInputFiles({ name: "other take.m4a", mimeType: "audio/mp4", buffer: Buffer.alloc(2048, 1) });
+  await expect(box.getByTestId("player-link-error")).toContainText("different recording");
+  await box.getByTestId("player-upload-input").setInputFiles({ name: "standup.mp4", mimeType: "video/mp4", buffer: Buffer.alloc(2048, 1) });
+  await expect(page.getByTestId("player")).toBeVisible();
+});
+
+test("captions show the line being spoken with its speaker; the video can be maximized and resized", async ({ page }) => {
+  await open(page, "/meetings/t-video");
+  const player = page.getByTestId("player");
+  await expect(player.getByTestId("player-video")).toBeVisible();
+  await page.locator('[data-seg="1"]').getByTestId("seg-play").click();
+  await expect(player).toHaveAttribute("data-playing", "true");
+  const caption = player.getByTestId("player-caption");
+  await expect(caption).toBeVisible();
+  const line = (await page.locator('[data-seg="1"] p').innerText()).trim();
+  await expect(caption).toContainText(line.slice(0, 20));
+  await player.getByTestId("player-captions").click();  // off
+  await expect(caption).toHaveCount(0);
+  await player.getByTestId("player-captions").click();  // on again
+  await expect(caption).toBeVisible();
+
+  await player.getByTestId("player-size").click();
+  await expect(player).toHaveAttribute("data-size", "m");
+  await player.getByTestId("player-maximize").click();
+  await expect(player).toHaveAttribute("data-fullscreen", "true");
+  await expect(caption).toBeVisible();
+  await player.getByTestId("player-maximize").click();  // exit full screen
+  await expect(player).not.toHaveAttribute("data-fullscreen", "true");
+  // Remembered on this browser (the test helper clears storage on each load, so read it directly).
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("quorum:player-view") ?? "{}"))).toEqual({ size: "m", captions: true });
 });

@@ -31,7 +31,7 @@ export async function resetAll(request: APIRequestContext) {
                                                         confirm_cloud_sensitive: true, web_search: false, meeting_notes_skill: true,
                                                         imported_cloud_notice: false, cloud_notices: [], voiceprints: true,
                                                         speaker_cloud_review: true, screen_names: true, vision_fallback: true,
-                                                        vision_cap: 12, screen_debug: false, vision_model: "", speaker_model: "", summary_model: "",
+                                                        vision_cap: 12, vision_frames: 0, screen_debug: false, vision_model: "", speaker_model: "", summary_model: "",
                                                         record_live: false, check_model: "", check_popups: true,
                                                         check_auto_minutes: 0, check_days: 90, check_all_projects: false,
                                                         search: { web_enabled: false, provider: "tavily", max_results: 5,

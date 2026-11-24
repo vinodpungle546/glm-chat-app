@@ -12,6 +12,11 @@ confidence, evidence), on-screen names seen, and people from memory relevant to 
 memory unrelated to the meeting.
 
 Long transcripts are split to fit the provider's context budget; results are merged per speaker.
+
+Before the names, the same review fixes spelling (`spelling`): misspelled or misheard words in the lines it was sent
+(names, product terms, acronyms), preferring the names and terms Quorum knows. Each fix is checked: the line keeps
+its wording, only a few words change, and each changed word either sounds like the one it replaces or is a known
+name or term. Lines from your microphone are never changed. Fixes go to the Corrections tab (Keep / Revert).
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from difflib import SequenceMatcher
 from typing import Callable
 
 import jsonschema
@@ -295,3 +301,132 @@ def revert(labels: dict[str, dict], speaker: str) -> dict[str, dict]:
     if label.get("source") == "cloud" and "previous" in label:
         labels[speaker] = label["previous"]
     return labels
+
+
+# ---------------------------------------------------------------------------
+# Spelling (before the names)
+# ---------------------------------------------------------------------------
+
+SPELLING_SYSTEM = ("You proofread a meeting transcript made by speech recognition. Fix only misspelled or misheard "
+                   "words: people's names, product and project names, technical terms and acronyms. Prefer the "
+                   "spellings in the known names and terms. Never rephrase, summarise, translate, add or remove "
+                   "content, and never change punctuation alone. Reply with JSON only.")
+SPELLING_SCHEMA = {
+    "type": "object", "required": ["fixes"],
+    "properties": {"fixes": {"type": "array", "items": {
+        "type": "object", "required": ["line", "text"],
+        "properties": {"line": {"type": "integer"}, "text": {"type": "string"}, "reason": {"type": "string"}}}}},
+}
+MAX_CHANGED = 4          # words changed in one place
+CHANGED_SHARE = 0.34     # share of a line's words a fix may change (at least MAX_CHANGED)
+SOUNDS_LIKE = 0.6
+
+
+def _norm(word: str) -> str:
+    return re.sub(r"[^\w']", "", word.lower())
+
+
+def _sound(text: str) -> str:
+    import participants_check
+    return "".join(participants_check.sound_key(w) for w in text.split())
+
+
+def check_fix(before: str, after: str, terms: set[str]) -> str:
+    """"" when `after` only fixes spellings in `before`; else why it's refused."""
+    a, b = before.split(), after.split()
+    if [_norm(w) for w in a] == [_norm(w) for w in b]:
+        return "nothing but punctuation or capitals changed"
+    changed = 0
+    term_words = {w for t in terms for w in (_norm(x) for x in t.split()) if w}
+    for op, i1, i2, j1, j2 in SequenceMatcher(None, [_norm(w) for w in a], [_norm(w) for w in b]).get_opcodes():
+        if op == "equal":
+            continue
+        old, new = " ".join(a[i1:i2]), " ".join(b[j1:j2])
+        if i2 - i1 > MAX_CHANGED or j2 - j1 > MAX_CHANGED:
+            return f"rewrites “{old or new}”"
+        known = bool(new) and all(_norm(w) in term_words for w in b[j1:j2])
+        alike = bool(old) and bool(new) and SequenceMatcher(None, _sound(old), _sound(new)).ratio() >= SOUNDS_LIKE
+        if not (known or alike):
+            return f"“{old}” → “{new}” isn't a spelling fix" if old and new else f"adds or drops “{old or new}”"
+        changed += max(i2 - i1, j2 - j1)
+    if changed > max(MAX_CHANGED, round(len(a) * CHANGED_SHARE)):
+        return "changes too much of the line"
+    return ""
+
+
+def spelling_messages(lines: list[str], terms: list[str], part: tuple[int, int] = (1, 1)) -> list[dict]:
+    body = [f"Transcript part {part[0]} of {part[1]}." if part[1] > 1 else "",
+            "Known names and terms (preferred spellings): " + "; ".join(terms[:300]) if terms else "",
+            "", "Transcript (#line [time] SPEAKER: text):", *lines, "",
+            "Rules:",
+            "- Only fix words the speech recognition got wrong: misspelled names, misheard terms or acronyms.",
+            "- Give the whole corrected text of the line (without the #number, time or speaker).",
+            "- Keep every other word exactly as it is. Don't fix grammar, filler words or style.",
+            "- reason: what was wrong, in a few words (e.g. 'misheard name Ciarán').",
+            "- Leave out lines that need nothing.",
+            'Reply as {"fixes": [{"line": 12, "text": "…", "reason": "…"}]} or {"fixes": []}.']
+    return [{"role": "system", "content": SPELLING_SYSTEM},
+            {"role": "user", "content": "\n".join(x for x in body if x)}]
+
+
+def _ask_schema(complete: Callable[[list[dict]], str], messages: list[dict], schema: dict) -> dict:
+    """One request plus one retry with the errors, for any of the review's JSON formats."""
+    def parse_with(reply: str) -> tuple[dict | None, str]:
+        text = re.sub(r"<think>.*?</think>", "", reply or "", flags=re.S)
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return None, "The reply contained no JSON object."
+        try:
+            data = json.loads(match.group(0))
+            jsonschema.validate(data, schema)
+        except json.JSONDecodeError as exc:
+            return None, f"The JSON is invalid: {exc.msg}."
+        except jsonschema.ValidationError as exc:
+            return None, f"The JSON doesn't match the format: {exc.message}"
+        return data, ""
+
+    reply = complete(messages)
+    data, error = parse_with(reply)
+    if data is not None:
+        return data
+    data, error = parse_with(complete(messages + [{"role": "assistant", "content": reply[:4000]},
+                                                  {"role": "user", "content": f"{error} Reply again with only the JSON."}]))
+    if data is None:
+        raise ValueError(error)
+    return data
+
+
+def spelling(transcript: dict, labels: dict[str, dict], terms: list[str], complete: Callable[[list[dict]], str],
+             budget_chars: int = DEFAULT_CHARS, progress: Callable[[str], None] | None = None) -> dict:
+    """{"fixes": [{line (0-based), before, text, reason}], "rejected": [{line, text, why}], "parts": n}. Lines of
+    the microphone's speaker (a call Quorum recorded) are sent for context but never changed."""
+    lines = transcript_lines(transcript)
+    segs = transcript.get("segments") or []
+    fixed = {spk for spk, lab in labels.items() if lab.get("source") == "microphone"}
+    fixed |= set(transcript.get("confirmed_speakers") or {})
+    term_set = set(terms)
+    out: dict = {"fixes": [], "rejected": [], "parts": 0}
+    parts = split_lines(lines, budget_chars)
+    out["parts"] = len(parts)
+    seen: set[int] = set()
+    for k, part in enumerate(parts):
+        if progress:
+            progress(f"Cloud review: spelling, part {k + 1} of {len(parts)}…" if len(parts) > 1 else "Cloud review: spelling…")
+        data = _ask_schema(complete, spelling_messages([t for _, _, t in part], terms, (k + 1, len(parts))),
+                           SPELLING_SCHEMA)
+        numbers = {n for n, _, _ in part}
+        for fix in data["fixes"]:
+            n, text = fix["line"], " ".join(str(fix.get("text") or "").split())
+            reason = " ".join(str(fix.get("reason") or "").split())[:MAX_REASON]
+            i = n - 1
+            why = ("not a line it was sent" if n not in numbers or not 0 <= i < len(segs) else
+                   "already fixed" if i in seen else
+                   "your microphone's line" if segs[i].get("speaker") in fixed else
+                   "no reason given" if not reason else
+                   check_fix(segs[i].get("text", ""), text, term_set))
+            if why:
+                out["rejected"].append({"line": i, "text": text, "why": why})
+                continue
+            seen.add(i)
+            out["fixes"].append({"line": i, "before": segs[i].get("text", ""), "text": text, "reason": reason})
+    return out

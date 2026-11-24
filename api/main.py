@@ -33,10 +33,12 @@ from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 import agent
+import attendees as attendees_mod
 import claude_import
 import cloud_providers
 import connector_directory
 import connectors
+import correction_review
 import imports
 import llm_backends
 import long_context
@@ -46,6 +48,7 @@ import meetings
 import memory_store
 import model_registry
 import notes_export
+import participants_check
 import people as people_store
 import projects
 import search_index
@@ -67,6 +70,7 @@ API_PUBLIC_URL = os.environ.get("API_PUBLIC_URL", "http://127.0.0.1:8000").rstri
 PREFS_FILE = DATA_DIR / "preferences.json"
 LABELS_DIR = DATA_DIR / "speaker_labels"
 SUMMARIES_DIR = DATA_DIR / "summaries"
+ATTENDEES_DIR = DATA_DIR / "attendees"   # your edits of each meeting's attendees
 PRODUCT_NAME = "Quorum"
 DEFAULT_SEARCH = {"web_enabled": False, "provider": web_providers.DEFAULT_PROVIDER, "max_results": 5,
                   "sources": {"chats": True, "transcripts": True, "memory": True, "connectors": False},
@@ -77,9 +81,12 @@ DEFAULT_PREFS = {"selected_model": "", "active_project": projects.DEFAULT_PROJEC
                  # cloud providers that already showed the one-time "memory may be sent" notice
                  "cloud_notices": [],
                  # speakers: voice fingerprints (biometric, on by default), cloud review of names,
-                 # on-screen names from video and the local vision-model fallback
+                 # on-screen names from video, reviewed by the local vision model (always, when one is installed;
+                 # vision_frames: frames it reviews, 0 = auto: 4 per speaker, 12 to 48). vision_fallback and
+                 # vision_cap are older settings, no longer used.
                  "voiceprints": True, "speaker_cloud_review": True, "screen_names": True,
-                 "vision_fallback": True, "vision_cap": 12, "screen_debug": False,
+                 "vision_fallback": True, "vision_cap": 12, "vision_frames": 0, "screen_debug": False,
+                 "participants_scan": True,
                  "vision_model": "",    # video frames: "" = the recommended vision model (vision_default)
                  "speaker_model": "",   # reading the transcript (local): "" = models.json speaker_default
                  "summary_model": "",   # meeting notes: "" = ask which model each time (never the chat model)
@@ -360,6 +367,10 @@ def put_prefs(body: dict) -> dict:
     for key in ("speaker_model", "vision_model"):
         if str(body.get(key) or "").startswith("cloud:"):
             raise HTTPException(400, "Speaker identification and video frames always use a local model.")
+    if "vision_cap" in body and "vision_frames" not in body:  # a page from before the review: its frame number
+        body = {**body, "vision_frames": max(0, int(body["vision_cap"] or 0))}
+    if "vision_frames" in body and not 0 <= int(body["vision_frames"] or 0) <= 200:
+        raise HTTPException(400, "Review between 1 and 200 frames, or 0 for Auto.")
     return save_prefs(body)
 
 
@@ -1491,14 +1502,27 @@ def wait_for_transcriber(emit) -> None:
         time.sleep(TRANSCRIBER_POLL)
 
 
+REVIEW_PER_SPEAKER, REVIEW_MIN, REVIEW_MAX = 4, 12, 48  # as transcriber/screen_names.review_budget
+
+
+def review_frames(speakers: int | None, setting: int | None = None) -> int:
+    """Frames the vision model reviews: the Settings number, else 4 per speaker (12 to 48)."""
+    if setting:
+        return int(setting)
+    return max(REVIEW_MIN, min(REVIEW_MAX, REVIEW_PER_SPEAKER * max(1, speakers or 4)))
+
+
 def screen_options(frames_model: str | None = None) -> dict:
     """On-screen name options for the transcriber, from Settings → Meetings (or the meeting's own
-    frames model). Only a model that can read images; a missing one falls back to an installed one."""
+    frames model). The vision model always reviews frames of every speaker when one is installed (only a model
+    that can read images; a missing one falls back to an installed one). vision_cap None = auto budget."""
     current = prefs()
     wanted = current["vision_model"] if frames_model is None else frames_model
-    vision = (model_registry.pick_vision_model(wanted or None) or "") if current["vision_fallback"] else ""
+    vision = model_registry.pick_vision_model(wanted or None) or ""
+    frames = int(current.get("vision_frames") or 0)
     return {"enabled": bool(current["screen_names"]), "vision_model": vision,
-            "vision_cap": int(current["vision_cap"]) if vision else 0, "debug": bool(current["screen_debug"])}
+            "vision_cap": (frames or None) if vision else 0, "debug": bool(current["screen_debug"]),
+            "participants": bool(current.get("participants_scan", True))}
 
 
 class MeetingModelsBody(BaseModel):
@@ -1560,7 +1584,7 @@ def estimate(body: EstimateBody) -> dict:
     """
     plan = plan_models(body)
     options = screen_options(plan["use"]["frames_model"] or "")
-    cap = options["vision_cap"] if options["enabled"] else 0
+    cap = review_frames(body.speakers, options["vision_cap"]) if options["enabled"] and options["vision_model"] else 0
     data = _transcriber(meetings.estimate, body.path, cap,
                         model_registry.seconds_per_frame(options["vision_model"]) if cap else None)
     data["models"] = {**plan, "screen_enabled": options["enabled"]}
@@ -1861,7 +1885,75 @@ def get_transcript(tid: str) -> dict:
     transcript["models"] = {**chosen, "frames_used": (transcript.get("screen_info") or {}).get("vision_model", ""),
                             "summary_used": (transcript["summary"] or {}).get("model", "")}
     transcript["followup"] = FOLLOWUPS.for_transcript(tid)
+    transcript["attendees"] = attendees_view(tid, transcript, labels)
+    transcript["participants_check"] = participants_record(tid)
+    names = transcript["display_names"]
+    ops = (transcript.get("edits") or {}).get("ops") or []
+    state = (transcript.get("edits") or {}).get("state") or {}
+    transcript["edits"] = [{"id": op["id"], "kind": op["kind"], "text": edit_description(op, names),
+                            "state": state.get(op["id"], "applied"), "created": op.get("created", "")} for op in ops]
     return transcript
+
+
+# ---------------------------------------------------------------------------
+# Attendees, the participants-list check, your edits
+# ---------------------------------------------------------------------------
+
+def attendee_edits(tid: str) -> dict:
+    """Your changes to a meeting's attendees (added, removed, renamed)."""
+    return _read_json(ATTENDEES_DIR / f"{tid}.json", attendees_mod.empty_edits())
+
+
+def attendees_view(tid: str, transcript: dict, labels: dict | None = None) -> dict:
+    """The meeting's attendees: the participants list from the video, every named speaker, your edits."""
+    return attendees_mod.build(transcript, labels if labels is not None else labels_for(tid), attendee_edits(tid))
+
+
+def participants_file(tid: str) -> Path:
+    return LABELS_DIR / f"{tid}.participants.json"
+
+
+def participants_record(tid: str) -> dict | None:
+    """The last check of the speaker names against the participants list (changes with pending/kept/reverted)."""
+    return _read_json(participants_file(tid), None)
+
+
+def run_participants_check(tid: str, transcript: dict, emit) -> dict | None:
+    """The last step of identification: names checked against the participants list read from the video.
+    Changes you reverted before stay reverted."""
+    roster = participants_check.roster_of(transcript)
+    if not roster:
+        return None
+    labels, result = participants_check.check(labels_for(tid), roster)
+    before = {(c["speaker"], c["to"]): c["state"] for c in (participants_record(tid) or {}).get("changes", [])}
+    for change in result["changes"]:
+        state = before.get((change["speaker"], change["to"]))
+        if state == "reverted":
+            labels = participants_check.revert(labels, change["speaker"])
+        if state in ("reverted", "kept"):
+            change["state"] = state
+    record = {**result, "roster": roster, "created_at": datetime.now().isoformat(timespec="seconds")}
+    _write_json(LABELS_DIR / f"{tid}.json", labels)
+    _write_json(participants_file(tid), record)
+    _push_names(tid, transcript, labels)
+    changed = sum(1 for c in result["changes"] if c["state"] == "pending")
+    if changed or result["flagged"]:
+        emit({"type": "status", "text": f"Checked against the participants list: {changed} name{'s' if changed != 1 else ''}"
+                                        f" changed, {len(result['flagged'])} not on the list"})
+    return record
+
+
+def edit_description(op: dict, names: dict[str, str]) -> str:
+    """One line describing an edit of yours (as in the transcriber's edits.describe)."""
+    name = lambda label: names.get(label, label)  # noqa: E731
+    if op["kind"] == "text":
+        return f"Wording: “{op.get('before', '')[:60]}” → “{op['text'][:60]}”"
+    if op["kind"] == "speaker":
+        n = len(op["at"])
+        return f"{n} line{'s' if n != 1 else ''} now said by {name(op['speaker'])}"
+    if op["kind"] == "split":
+        return "Split: " + " / ".join(f"{name(p['speaker'])}: “{p['text'][:40]}”" for p in op["parts"])
+    return f"Merged two lines: “{op['text'][:60]}”"
 
 
 @app.get("/api/meetings/transcripts/{tid}/markdown", response_class=PlainTextResponse)
@@ -1874,6 +1966,28 @@ def transcript_markdown(tid: str) -> str:
 def transcript_media_info(tid: str) -> dict:
     """GET /api/meetings/transcripts/{id}/media: how the meeting can be played back (see transcriber)."""
     return _transcriber(meetings.media_info, tid)
+
+
+@app.get("/api/meetings/transcripts/{tid}/recording/candidates")
+def transcript_recording_candidates(tid: str) -> dict:
+    """GET /api/meetings/transcripts/{id}/recording/candidates: a moved recording found again on this Mac (same
+    name; `match` when as long as the meeting)."""
+    if not re.fullmatch(r"[\w-]{1,64}", tid):
+        raise HTTPException(404, "Transcript not found.")
+    return _transcriber(meetings.recording_candidates, tid)
+
+
+class RelinkBody(BaseModel):
+    """POST …/recording body: a found recording's path, or the path of one just uploaded."""
+    path: str = Field(..., min_length=1, max_length=4096)
+
+
+@app.post("/api/meetings/transcripts/{tid}/recording")
+def transcript_relink_recording(tid: str, body: RelinkBody) -> dict:
+    """POST /api/meetings/transcripts/{id}/recording: play the meeting from that copy of its recording."""
+    if not re.fullmatch(r"[\w-]{1,64}", tid):
+        raise HTTPException(404, "Transcript not found.")
+    return _transcriber(meetings.relink_recording, tid, body.path)
 
 
 MEDIA_PASS_HEADERS = ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag")
@@ -1924,6 +2038,8 @@ def known_terms(transcript: dict) -> list[str]:
             terms += e.get("aliases") or []
     for info in (transcript.get("screen_names") or {}).values():
         terms += [item["name"] for item in (info or {}).get("names", []) if not item.get("truncated")]
+    terms += participants_check.roster_of(transcript)
+    terms += (transcript.get("participants") or {}).get("invited") or []
     return [t for t in dict.fromkeys(t.strip() for t in terms if t and t.strip())][:400]
 
 
@@ -2006,6 +2122,94 @@ def delete_reference(tid: str, rid: str) -> dict:
     return after_correction(tid, _transcriber(meetings.delete_reference, tid, rid))
 
 
+class CorrectionReviewBody(BaseModel):
+    """POST …/correction-review body: the model that reviews the corrected transcript ("" = the local default),
+    and the answer to the cloud question."""
+    model_id: str = ""
+    confirm: str | None = None  # "cloud": send this meeting to the chosen cloud model
+
+
+def correction_review_job(tid: str, body: CorrectionReviewBody):
+    """A model reads each corrected line next to the other transcripts and proposes sentence fixes (SSE). A cloud
+    model asks first (per meeting and provider) and isn't offered in a project set to local."""
+    def run(emit):
+        if not re.fullmatch(r"[\w-]{1,64}", tid):
+            emit({"type": "error", "kind": "not_found", "message": "Transcript not found."})
+            return
+        if body.model_id:
+            provider = provider_for(body.model_id)
+        else:
+            name = summary_local_model()
+            provider = model_registry.OllamaProvider(name) if name else None
+        if provider is None:
+            emit({"type": "error", "kind": "local_model",
+                  "message": "No local model is installed. Download one in Settings → Local models."})
+            return
+        if not provider.is_local:
+            if active_project().get("default_model_mode") == "local":
+                emit({"type": "error", "kind": "local_only",
+                      "message": "This project is set to local models only, so a cloud model can't review it."})
+                return
+            ok = _read_json(meeting_models_dir() / f"{tid}.json", {}).get("cloud_ok") or []
+            key = provider_key(provider)
+            if body.confirm == "cloud":
+                if key not in ok:
+                    remember_meeting_models(tid, cloud_ok=ok + [key])
+            elif key not in ok:
+                emit({"type": "confirm", "kind": "sensitive", "stage": "corrections", "model": model_name(provider),
+                      "provider": provider_label(provider),
+                      "sends": ["this meeting's transcript", "the other transcripts you added",
+                                "the speakers' names"]})
+                return
+        else:
+            wait_for_transcriber(emit)
+        emit({"type": "status", "text": "Reading the corrected transcript and the other transcripts…"})
+        context = meetings.correction_context(tid)
+        transcript = meetings.transcript(tid)
+        names = display_names(transcript, labels_for(tid))
+        speakers = {spk: names.get(spk) or spk for spk in context["speakers"]}
+        fixed = set(context.get("fixed") or [])
+        todo = correction_review.batches(context["lines"])
+        if not todo:
+            emit({"type": "notice", "text": "Every line already matches the other transcripts: nothing for the model to review."})
+            emit({"type": "done", "correction": transcript.get("correction"), "dropped": []})
+            return
+        label = model_name(provider)
+        emit({"type": "status", "text": f"{label} is reviewing {sum(len(b) for b in todo)} lines…"})
+        complete = (lambda m: provider.complete(m, max_tokens=correction_review.MAX_TOKENS, temperature=0.1)) \
+            if provider.is_local else provider.complete
+
+        def progress(done: int, total: int) -> None:
+            emit({"type": "progress", "done": done, "total": total})
+
+        try:
+            changes, dropped = correction_review.review(context["lines"], speakers, fixed, complete, progress)
+        except (requests.RequestException, cloud_providers.CloudProviderError) as exc:
+            emit({"type": "error", "kind": "model", "message": f"{label} didn't answer ({exc}). The corrections "
+                                                                 "made without a model are kept."})
+            return
+        correction = after_correction(tid, meetings.correction_model(tid, body.model_id or provider.model_id,
+                                                                     label, changes))
+        emit({"type": "done", "correction": correction, "dropped": dropped[:20],
+              "changes": len(changes), "model": label})
+    return run
+
+
+@app.post("/api/meetings/transcripts/{tid}/correction-review")
+def correction_review_run(tid: str, body: CorrectionReviewBody) -> StreamingResponse:
+    """POST /api/meetings/transcripts/{id}/correction-review: a model reviews the corrected transcript (SSE)."""
+    return sse(correction_review_job(tid, body))
+
+
+@app.delete("/api/meetings/transcripts/{tid}/correction-review")
+def correction_review_clear(tid: str, source: str = "review") -> dict:
+    """DELETE …/correction-review?source=review|cloud_review: drops that model's fixes (the review's, or the cloud
+    review's spelling fixes); the engine's corrections stay."""
+    if source not in ("review", "cloud_review"):
+        raise HTTPException(404, "No such review.")
+    return after_correction(tid, _transcriber(meetings.correction_model_clear, tid, source))
+
+
 @app.post("/api/meetings/transcripts/{tid}/corrections/{action}")
 def corrections_action(tid: str, action: str) -> dict:
     """POST …/corrections/undo (back to the original, sources kept) or …/corrections/apply (again)."""
@@ -2017,8 +2221,8 @@ def corrections_action(tid: str, action: str) -> dict:
 
 @app.post("/api/meetings/transcripts/{tid}/corrections/{cid}/{action}")
 def correction_change(tid: str, cid: str, action: str) -> dict:
-    """POST …/corrections/{change}/revert|restore: one change."""
-    if action not in ("revert", "restore"):
+    """POST …/corrections/{change}/revert|restore|keep: one change."""
+    if action not in ("revert", "restore", "keep"):
         raise HTTPException(404, "No such action.")
     return after_correction(tid, _transcriber(meetings.correction_action, tid, action, cid))
 
@@ -2029,8 +2233,10 @@ def delete_transcript(tid: str, recording: bool = False) -> dict:
     asked, its uploaded recording).
     """
     result = _transcriber(meetings.delete_transcript, tid, recording)
-    for path in (LABELS_DIR / f"{tid}.json", SUMMARIES_DIR / f"{tid}.json", review_file(tid)):
+    for path in (LABELS_DIR / f"{tid}.json", SUMMARIES_DIR / f"{tid}.json", review_file(tid), participants_file(tid),
+                 ATTENDEES_DIR / f"{tid}.json"):
         path.unlink(missing_ok=True)
+    people_store.forget_meeting(tid)  # voice fingerprints this meeting taught people memory
     return result
 
 
@@ -2142,6 +2348,9 @@ def run_cloud_review(tid: str, transcript: dict, labels: dict, provider, emit) -
         emit(notice)
     budget = int(summaries.CLOUD_CONTEXT_TOKENS * 3.2) if hasattr(summaries, "CLOUD_CONTEXT_TOKENS") else \
         speaker_review.DEFAULT_CHARS
+    spelled = run_cloud_spelling(tid, transcript, labels, provider, min(budget, speaker_review.DEFAULT_CHARS), emit)
+    if spelled.get("fixes"):
+        transcript = meetings.transcript(tid)  # the names are reviewed on the corrected text
     try:
         result = speaker_review.review(transcript, labels, people_store.load(), provider.complete,
                                        budget_chars=min(budget, speaker_review.DEFAULT_CHARS),
@@ -2161,9 +2370,29 @@ def run_cloud_review(tid: str, transcript: dict, labels: dict, provider, emit) -
     _write_json(LABELS_DIR / f"{tid}.json", labels)
     _push_names(tid, transcript, labels)
     record = {"status": "done", "model": name, "model_id": provider.model_id, "provider": provider_label(provider),
-              "created_at": datetime.now().isoformat(timespec="seconds"), **result}
+              "created_at": datetime.now().isoformat(timespec="seconds"), **result, "spelling": spelled}
     _write_json(review_file(tid), record)
     return record
+
+
+def run_cloud_spelling(tid: str, transcript: dict, labels: dict, provider, budget: int, emit) -> dict:
+    """The cloud review's first step: spelling fixes in the lines it was sent, saved as the Corrections tab's
+    cloud layer (Keep / Revert there). A failure here doesn't stop the name review."""
+    name = model_name(provider)
+    terms = known_terms(transcript) + attendees_mod.names(attendees_view(tid, transcript, labels))
+    try:
+        found = speaker_review.spelling(transcript, labels, list(dict.fromkeys(terms)), provider.complete,
+                                        budget_chars=budget, progress=lambda text: emit({"type": "status", "text": text}))
+    except (requests.RequestException, ValueError) as exc:
+        emit({"type": "notice", "kind": "spelling_failed",
+              "text": f"{name} couldn't check the spelling ({str(exc)[:120]}). The names are still reviewed."})
+        return {"fixes": 0, "rejected": [], "error": str(exc)[:200]}
+    if found["fixes"]:
+        correction = _transcriber(meetings.correction_model, tid, provider.model_id, name, found["fixes"], "cloud_review")
+        after_correction(tid, correction)
+        emit({"type": "status", "text": f"{name} fixed the spelling in {len(found['fixes'])} "
+                                        f"line{'s' if len(found['fixes']) != 1 else ''} (see Corrections)"})
+    return {"fixes": len(found["fixes"]), "rejected": found["rejected"][:20]}
 
 
 def identify_job(tid: str, body: IdentifyBody):
@@ -2210,6 +2439,8 @@ def identify_job(tid: str, body: IdentifyBody):
             remember_meeting_models(tid, speaker_used=model or "")
             review_file(tid).unlink(missing_ok=True)
             _push_names(tid, transcript, labels)
+            if run_participants_check(tid, transcript, emit):
+                labels = labels_for(tid)
             save_screen_voiceprints(tid, transcript, labels, emit)
             save_microphone_voiceprint(tid, transcript, labels, me)
             emit({"type": "labels", "labels": labels,
@@ -2230,6 +2461,8 @@ def identify_job(tid: str, body: IdentifyBody):
             return
         else:
             review = run_cloud_review(tid, transcript, labels_for(tid), selected, emit)
+            if review and review.get("status") == "done":  # the list has the last word over the cloud's names
+                run_participants_check(tid, meetings.transcript(tid), emit)
         labels = labels_for(tid)
         emit({"type": "done", "labels": labels, "display_names": display_names(meetings.transcript(tid), labels),
               "review": review})
@@ -2286,6 +2519,30 @@ def review_action(tid: str, action: str, body: ReviewAction) -> dict:
     return {"labels": labels, "display_names": display_names(meetings.transcript(tid), labels), "review": record}
 
 
+@app.post("/api/meetings/transcripts/{tid}/speakers/participants/{action}")
+def participants_action(tid: str, action: str, body: ReviewAction) -> dict:
+    """Keep or revert one change the participants-list check made ("keep" / "revert"), or all ("revert-all")."""
+    labels, record = labels_for(tid), participants_record(tid)
+    if record is None or action not in ("keep", "revert", "revert-all"):
+        raise HTTPException(404, "No participants-list check for this meeting.")
+    targets = [c for c in record.get("changes", []) if c.get("state") == "pending"
+               and (action == "revert-all" or c["speaker"] == body.speaker)]
+    if not targets:
+        raise HTTPException(404, "No pending change for that speaker.")
+    for change in targets:
+        if action == "keep":
+            change["state"] = "kept"
+        else:
+            change["state"] = "reverted"
+            labels = participants_check.revert(labels, change["speaker"])
+    transcript = _transcriber(meetings.transcript, tid)
+    _write_json(LABELS_DIR / f"{tid}.json", labels)
+    _write_json(participants_file(tid), record)
+    _push_names(tid, transcript, labels)
+    return {"labels": labels, "display_names": display_names(meetings.transcript(tid), labels),
+            "participants_check": record, "attendees": attendees_view(tid, transcript, labels)}
+
+
 class SpeakerCorrection(BaseModel):
     """PUT …/speakers body: the names and roles the user set, per speaker label."""
     labels: dict[str, dict]  # {"SPEAKER_00": {"name": "Owen", "role": "QA"}}
@@ -2298,24 +2555,202 @@ def correct_speakers(tid: str, body: SpeakerCorrection) -> dict:
     vectors = (transcript.get("speaker_embeddings") or {}) if prefs()["voiceprints"] else {}
     labels = labels_for(tid)
     record = review_for(tid)
+    checked = participants_record(tid)
+    people_edits = attendee_edits(tid)
     for spk, value in body.labels.items():
         if spk not in (transcript.get("speakers") or []):
             raise HTTPException(400, f"Unknown speaker {spk}.")
         name, role = str(value.get("name") or "").strip(), str(value.get("role") or "").strip()
+        rows = attendees_mod.build(transcript, labels, people_edits)["attendees"]
+        people_edits = attendees_mod.follow_speaker_rename(people_edits, rows, spk, name)
         if name:
             labels[spk] = {"name": name, "role": role, "confidence": 1.0, "level": "confirmed",
                            "evidence": ["confirmed by you"], "source": "user"}
         else:
             labels.pop(spk, None)
-        for change in (record or {}).get("changes", []):
+        for change in (record or {}).get("changes", []) + (checked or {}).get("changes", []):
             if change["speaker"] == spk and change.get("state") == "pending":
                 change["state"] = "edited"
         people_store.learn(tid, spk, name, role, vectors.get(spk))
     _write_json(LABELS_DIR / f"{tid}.json", labels)
+    _write_json(ATTENDEES_DIR / f"{tid}.json", people_edits)
     if record is not None:
         _write_json(review_file(tid), record)
+    if checked is not None:
+        _write_json(participants_file(tid), checked)
     _push_names(tid, transcript, labels)
-    return {"labels": labels, "display_names": display_names(meetings.transcript(tid), labels)}
+    return {"labels": labels, "display_names": display_names(meetings.transcript(tid), labels),
+            "attendees": attendees_view(tid, transcript, labels)}
+
+
+class AttendeeChange(BaseModel):
+    """POST …/attendees: add, remove or rename an attendee."""
+    action: str = Field(pattern=r"^(add|remove|rename)$")
+    name: str = Field(min_length=1, max_length=120)
+    to: str = Field("", max_length=120)
+
+
+@app.post("/api/meetings/transcripts/{tid}/attendees")
+def change_attendees(tid: str, body: AttendeeChange) -> dict:
+    """Your change to the attendees. Renaming someone who spoke renames the speaker too (as a name you set)."""
+    transcript = _transcriber(meetings.transcript, tid)
+    labels = labels_for(tid)
+    view = attendees_view(tid, transcript, labels)
+    row = next((r for r in view["attendees"] if participants_check.fold(r["name"]) == participants_check.fold(body.name)), None)
+    if body.action == "rename" and row and row.get("speaker"):
+        spk = row["speaker"]
+        role = (labels.get(spk) or {}).get("role", "")
+        edits = attendees_mod.edit(attendee_edits(tid), view["attendees"], "rename", body.name, body.to)
+        _write_json(ATTENDEES_DIR / f"{tid}.json", edits)
+        result = correct_speakers(tid, SpeakerCorrection(labels={spk: {"name": body.to.strip(), "role": role}}))
+        transcript = _transcriber(meetings.transcript, tid)
+        return {**result, "attendees": attendees_view(tid, transcript)}
+    try:
+        edits = attendees_mod.edit(attendee_edits(tid), view["attendees"], body.action, body.name, body.to)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    _write_json(ATTENDEES_DIR / f"{tid}.json", edits)
+    return {"attendees": attendees_view(tid, transcript, labels)}
+
+
+class EditPartBody(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    speaker: str | None = Field(None, max_length=40)
+    name: str | None = Field(None, max_length=120)
+
+
+class TranscriptEditBody(BaseModel):
+    """POST …/edits: one edit of yours. `lines` are 0-based line numbers as shown; a speaker is an existing label
+    (`speaker`) or a person's name (`name`: an existing speaker with that name, else a new speaker)."""
+    kind: str = Field(pattern=r"^(text|speaker|split|merge)$")
+    lines: list[int] = Field(min_length=1, max_length=5000)
+    text: str | None = Field(None, max_length=20_000)
+    speaker: str | None = Field(None, max_length=40)
+    name: str | None = Field(None, max_length=120)
+    parts: list[EditPartBody] | None = None
+
+
+def speaker_for_name(tid: str, transcript: dict, labels: dict, name: str) -> str:
+    """The speaker label for a person you named: one already named so (or with that name in the transcript), else a
+    new speaker (SPEAKER_U01, …) with your name as a label you set."""
+    key = participants_check.fold(name)
+    for spk in transcript.get("speakers") or []:
+        if participants_check.fold(attendees_mod.speaker_name(spk, transcript, labels)) == key:
+            return spk
+    used = set(transcript.get("speakers") or []) | set(labels)
+    n = 1
+    while f"SPEAKER_U{n:02d}" in used:
+        n += 1
+    spk = f"SPEAKER_U{n:02d}"
+    labels[spk] = {"name": " ".join(name.split()), "role": "", "confidence": 1.0, "level": "confirmed",
+                   "evidence": ["named by you while editing the transcript"], "source": "user"}
+    _write_json(LABELS_DIR / f"{tid}.json", labels)
+    return spk
+
+
+def after_edit(tid: str) -> None:
+    """Keeps search, speaker names and the summary in step with your edits."""
+    _TRANSCRIPT_CHUNKS.pop(tid, None)
+    transcript = meetings.transcript(tid)
+    labels = labels_for(tid)
+    present = set(transcript.get("speakers") or [])
+    dropped = [spk for spk in labels if spk.startswith("SPEAKER_U") and spk not in present]
+    for spk in dropped:  # a speaker you created whose lines were all undone
+        labels.pop(spk)
+    if dropped:
+        _write_json(LABELS_DIR / f"{tid}.json", labels)
+    _push_names(tid, transcript, labels)
+    summary = summary_for(tid)
+    if summary and not summary.get("edited_after"):
+        summary.update(stale=True, edited_after=True)
+        _write_json(SUMMARIES_DIR / f"{tid}.json", summary)
+
+
+@app.post("/api/meetings/transcripts/{tid}/edits")
+def add_transcript_edit(tid: str, body: TranscriptEditBody) -> dict:
+    """POST …/edits: your edit of the wording, who said lines, a split or a merge. Returns the meeting as now,
+    plus `voice_question` when lines moved to a named person whose voice fingerprint could be updated."""
+    transcript = _transcriber(meetings.transcript, tid)
+    labels = labels_for(tid)
+    edit = {"kind": body.kind, "lines": body.lines}
+    if body.text is not None:
+        edit["text"] = body.text
+    moved_to = None
+    if body.kind in ("speaker", "merge") and (body.speaker or body.name):
+        edit["speaker"] = body.speaker or speaker_for_name(tid, transcript, labels, body.name or "")
+        moved_to = edit["speaker"] if body.kind == "speaker" else None
+    if body.kind == "speaker" and "speaker" not in edit:
+        raise HTTPException(400, "Choose who said it.")
+    if body.kind == "split":
+        if not body.parts or len(body.parts) < 2:
+            raise HTTPException(400, "A split needs two parts.")
+        parts = []
+        for part in body.parts:
+            spk = part.speaker or (speaker_for_name(tid, transcript, labels, part.name) if part.name else None)
+            if not spk:
+                raise HTTPException(400, "Choose who said each part.")
+            parts.append({"text": part.text, "speaker": spk})
+        edit["parts"] = parts
+        moved_to = parts[-1]["speaker"]
+    _transcriber(meetings.add_edit, tid, edit)
+    after_edit(tid)
+    result = get_transcript(tid)
+    name = attendees_mod.speaker_name(moved_to, result, result["labels"]) if moved_to else ""
+    if name and prefs()["voiceprints"] and result.get("source_type") != "text":
+        result["voice_question"] = {"speaker": moved_to, "name": name}
+    return result
+
+
+@app.delete("/api/meetings/transcripts/{tid}/edits/{op_id}")
+def undo_transcript_edit(tid: str, op_id: str) -> dict:
+    """Undoes one edit of yours."""
+    _transcriber(meetings.undo_edit, tid, op_id)
+    after_edit(tid)
+    return get_transcript(tid)
+
+
+@app.delete("/api/meetings/transcripts/{tid}/edits")
+def undo_all_transcript_edits(tid: str) -> dict:
+    """Undoes all your edits."""
+    _transcriber(meetings.undo_edit, tid, None)
+    after_edit(tid)
+    return get_transcript(tid)
+
+
+class VoiceRefresh(BaseModel):
+    speakers: list[str] = Field(min_length=1, max_length=50)
+
+
+@app.post("/api/meetings/transcripts/{tid}/voiceprints/refresh")
+def refresh_voiceprints(tid: str, body: VoiceRefresh) -> dict:
+    """You moved lines to someone: their voice fingerprint is made again from the lines they now have (a
+    transcriber job, the pyannote embedding model only). When it's done the app calls …/voiceprints/learn."""
+    if not prefs()["voiceprints"]:
+        raise HTTPException(409, "Voice fingerprints are switched off in Settings → Meetings.")
+    return _transcriber(meetings.backfill_voiceprints, tid)
+
+
+@app.post("/api/meetings/transcripts/{tid}/voiceprints/learn")
+def learn_voiceprints(tid: str, body: VoiceRefresh) -> dict:
+    """After …/voiceprints/refresh: saves these speakers' new fingerprints to the people you named."""
+    transcript = _transcriber(meetings.transcript, tid)
+    vectors = transcript.get("speaker_embeddings") or {}
+    labels = labels_for(tid)
+    learned = []
+    for spk in body.speakers:
+        name = attendees_mod.speaker_name(spk, transcript, labels)
+        if name and vectors.get(spk):
+            people_store.learn(tid, spk, name, (labels.get(spk) or {}).get("role", ""), vectors[spk], source="user")
+            learned.append(name)
+    return {"learned": learned}
+
+
+@app.delete("/api/meetings/transcripts/{tid}/voiceprints")
+def forget_meeting_voices(tid: str) -> dict:
+    """Deletes the voice fingerprints of one meeting: the transcript's own and those it taught people memory."""
+    removed = people_store.forget_meeting(tid)
+    _transcriber(meetings.forget_voiceprints, tid)
+    return {"deleted": removed}
 
 
 @app.post("/api/meetings/transcripts/{tid}/split-speakers")
@@ -2432,6 +2867,7 @@ def summary_job(tid: str, body: SummaryBody):
         if provider.is_local:
             wait_for_transcriber(emit)
         meta = meetings.transcript(tid)
+        meta["attendees"] = attendees_view(tid, meta)["attendees"]  # people who joined but didn't speak too
         length = (agent.context_length_for(provider.backend.model) if provider.is_local
                   else summaries.CLOUD_CONTEXT_TOKENS)
         emit({"type": "start", "model": model_label(provider), "model_id": provider.model_id})
@@ -2802,6 +3238,9 @@ def check_job(body: CheckBody):
             (f["text"] for e in store["entries"] if e["kind"] == "profile" for f in e.get("facts", [])
              if re.search(r"\b(role|i am|i'm|title)\b", f["text"], re.I)), "")
         attendees = {l["speaker"].lower() for l in lines if l["speaker"] not in ("You", "Others")}
+        if body.transcript_id:  # the meeting's attendees (who joined, even without speaking)
+            attendees |= {n.lower() for n in attendees_mod.names(
+                attendees_view(body.transcript_id, meetings.transcript(body.transcript_id)))}
         emit({"type": "status", "text": "Reading earlier meetings and memory…"})
         earlier_list = earlier_meetings({body.transcript_id or ""}, attendees, project, datetime.now())
         earlier = meeting_check.earlier_items(earlier_list)

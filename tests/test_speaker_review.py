@@ -213,7 +213,8 @@ def test_auto_mode_asks_first_then_reviews_on_confirm(meeting_api):
     assert out[-1]["stage"] == "speaker_review" and "Claude Opus 5.5" in out[-1]["question"]
     confirmed = identify(meeting_api, model_id="cloud:anthropic:claude-opus-5-5", confirm="cloud", review_only=True)
     assert confirmed[-1]["review"]["changes"][0]["name"] == "Daniel Okafor"
-    assert len([r for r in fake_cloud.REQUESTS if r["api"] == "anthropic"]) == 1
+    # one request for the spelling, one for the names
+    assert len([r for r in fake_cloud.REQUESTS if r["api"] == "anthropic"]) == 2
 
 
 def test_choosing_local_keeps_local_names(meeting_api):

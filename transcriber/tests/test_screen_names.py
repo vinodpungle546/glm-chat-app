@@ -136,16 +136,45 @@ def test_aggregate_counts_names_and_folds_truncated_labels():
     assert out["SPEAKER_01"] == {"names": [dict(out["SPEAKER_01"]["names"][0])], "frames": 2, "resolved": 1}
 
 
-def test_vision_frames_are_capped_and_unnamed_speakers_go_first():
-    results = ([sn.FrameResult(i, "SPEAKER_00", "unresolved") for i in range(5)]
-               + [sn.FrameResult(10, "SPEAKER_00", "ocr", "Priya Sharma")]
-               + [sn.FrameResult(20 + i, "SPEAKER_01", "ambiguous") for i in range(5)]
-               + [sn.FrameResult(30, "SPEAKER_02", "screen_share")])
-    picked = sn.pick_for_vision(results, 3)
-    assert len(picked) == 3
-    assert picked[0].speaker == "SPEAKER_01"
-    assert all(r.status in ("unresolved", "ambiguous") for r in picked)
-    assert sn.pick_for_vision(results, 0) == []
+def test_review_covers_every_speaker_including_screen_share_and_read_frames():
+    results = ([sn.FrameResult(i, "SPEAKER_00", "unresolved", path="f") for i in range(5)]
+               + [sn.FrameResult(10, "SPEAKER_00", "ocr", "Priya Sharma", path="f")]
+               + [sn.FrameResult(20 + i, "SPEAKER_01", "ambiguous", path="f") for i in range(5)]
+               + [sn.FrameResult(30, "SPEAKER_02", "screen_share", path="f")]
+               + [sn.FrameResult(40, "SPEAKER_03", "ocr", "Mei Lin Chen", path="f")]
+               + [sn.FrameResult(50, "SPEAKER_04", "error", path="f")])
+    picked = sn.pick_for_review(results, 4)
+    assert len(picked) == 4
+    assert [r.speaker for r in picked] == ["SPEAKER_01", "SPEAKER_02", "SPEAKER_00", "SPEAKER_03"]  # unnamed first
+    assert picked[2].status == "unresolved"  # what the text reader couldn't settle before what it read
+    everything = sn.pick_for_review(results, 100)
+    assert len(everything) == 13 and all(r.status != "error" for r in everything)
+    assert sn.pick_for_review(results, 0) == []
+
+
+def test_review_budget_is_four_frames_per_speaker_within_limits():
+    assert [sn.review_budget(n) for n in (1, 3, 5, 12, 30)] == [12, 12, 20, 48, 48]
+    assert sn.review_budget(5, 30) == 30
+
+
+def test_a_review_confirms_corrects_or_fills():
+    r = sn.FrameResult(1, "SPEAKER_00", "ocr", "Priya Sharma")
+    assert sn.review_frame(r, {"name": "Priya Sharma"}) == "confirmed" and r.name == "Priya Sharma"
+    r = sn.FrameResult(2, "SPEAKER_00", "ocr", "Priya Sharma")
+    assert sn.review_frame(r, {"name": "Daniel Okafor"}) == "corrected"
+    assert r.name == "Priya Sharma" and r.vision_name == "Daniel Okafor"  # both kept as evidence
+    r = sn.FrameResult(3, "SPEAKER_01", "screen_share")
+    assert sn.review_frame(r, {"name": "Mei Lin Chen", "truncated": False}) == "filled"
+    assert (r.status, r.name) == ("vision", "Mei Lin Chen")
+    r = sn.FrameResult(4, "SPEAKER_01", "unresolved")
+    assert sn.review_frame(r, {"name": "", "screen_share": True}) == "no_answer" and r.status == "screen_share"
+    out = sn.aggregate([sn.FrameResult(1, "SPEAKER_00", "ocr", "Priya Sharma", review="confirmed"),
+                        sn.FrameResult(2, "SPEAKER_00", "ocr", "Priya Sharma", review="corrected",
+                                       vision_name="Daniel Okafor")])
+    names = {e["name"]: e for e in out["SPEAKER_00"]["names"]}
+    assert names["Priya Sharma"]["count"] == 2 and names["Priya Sharma"]["confirmed"] == 1
+    assert names["Daniel Okafor"]["vision"] == 1
+    assert out["SPEAKER_00"]["conflicts"] == [{"t": 2, "ocr": "Priya Sharma", "vision": "Daniel Okafor"}]
 
 
 def test_vision_reply_parsing_reads_names_only():
@@ -158,7 +187,7 @@ def test_vision_reply_parsing_reads_names_only():
 
 def test_vision_reply_with_quoted_booleans():
     reply = sn.parse_vision_reply('{"screen_share": "false", "highlighted": "false", "name": null}')
-    assert reply == {"screen_share": False, "highlighted": False, "name": "", "truncated": False}
+    assert reply == {"screen_share": False, "highlighted": False, "name": "", "truncated": False, "list_name": ""}
     assert sn.parse_vision_reply('{"screen_share": "false", "highlighted": "true", "name": "Mei Lin Chen"}')["name"] == "Mei Lin Chen"
 
 
@@ -220,7 +249,7 @@ def test_stage_names_each_speaker_and_uses_vision_for_unhighlighted_turns(tmp_pa
     video = synth.make_video(tmp_path / "call.mp4", turns, NAMES, modes={5: "none"})
     asked = []
 
-    def vision(image):
+    def vision(image, names):
         asked.append(image)
         return {"screen_share": False, "highlighted": True, "name": "Mei Lin Chen", "truncated": False}
 
@@ -230,7 +259,7 @@ def test_stage_names_each_speaker_and_uses_vision_for_unhighlighted_turns(tmp_pa
     assert found["SPEAKER_01"]["names"][0]["name"] == "Daniel Okafor"
     assert found["SPEAKER_02"]["names"][0]["name"] == "Mei Lin Chen"
     assert len(asked) == 1 and info["vision_frames"] == 1 and info["vision_model"] == "gemma4:e4b"
-    assert info["status"] == "done" and info["frames"] >= 6
+    assert info["status"] == "done" and info["frames"] >= 6 and info["reviewed"] == 1
 
 
 @needs_ffmpeg
@@ -238,9 +267,42 @@ def test_stage_without_vision_model_never_calls_it(tmp_path):
     turns = [(0, 0, 6), (1, 6.5, 12)]
     video = synth.make_video(tmp_path / "call.mp4", turns, NAMES[:2], modes={1: "none"})
     found, info = sn.run(video, synth.segments_for(turns), tmp_path / "w", lambda f: None, {"vision_cap": 5},
-                         ocr=fake_ocr_for(NAMES[:2]), vision=lambda image: pytest.fail("vision called"))
+                         ocr=fake_ocr_for(NAMES[:2]), vision=lambda image, names: pytest.fail("vision called"))
     assert info["vision_frames"] == 0 and info["unresolved"] >= 1
+    assert info["review_reason"].startswith("No vision model is installed")
     assert found["SPEAKER_01"]["resolved"] == 0
+
+
+@needs_ffmpeg
+def test_screen_share_with_a_thumbnail_strip_is_reviewed_and_named(tmp_path):
+    """A shared screen with the participants in a side strip: the text reader calls every frame a screen share
+    (lots of text, no tile border), so before the review no names were found. The vision model reviews those
+    frames and names each speaker; its answers must be labels the text reader saw."""
+    turns = [(0, 0, 6), (1, 6.5, 12), (2, 12.5, 18), (0, 18.5, 24), (1, 24.5, 30), (2, 30.5, 36)]
+    video = synth.make_video(tmp_path / "share.mp4", turns, NAMES, modes={i: "share_strip" for i in range(6)})
+    strip = [{"text": n, "confidence": 0.99, "box": [1030 / 1280, (40 + i * 150 + 104) / 720, 0.15, 0.03]}
+             for i, n in enumerate(NAMES)]
+    rows = [{"text": f"Release checklist step {i + 1}: verify the payment flow", "confidence": 0.9,
+             "box": [0.03, (36 + i * 32) / 720, 0.7, 0.03]} for i in range(20)]
+
+    def ocr(paths, on_line=None):
+        return {str(p): rows + strip for p in paths}
+
+
+    def vision(image, names):  # reads the ring in the strip: who talks at that frame's time
+        t = float(image.stem)
+        spk = next(s for s, start, end in turns if start <= t < end)
+        assert NAMES[spk] in names
+        return {"screen_share": True, "highlighted": True, "name": NAMES[spk], "truncated": False}
+
+    old, old_info = sn.run(video, synth.segments_for(turns), tmp_path / "old", lambda f: None,
+                           {"vision_model": ""}, ocr=ocr)
+    assert old_info["screen_share"] == old_info["frames"] and all(v["resolved"] == 0 for v in old.values())
+    found, info = sn.run(video, synth.segments_for(turns), tmp_path / "new", lambda f: None,
+                         {"vision_model": "qwen3-vl:4b-instruct"}, ocr=ocr, vision=vision)
+    assert {spk: v["names"][0]["name"] for spk, v in found.items()} == {
+        "SPEAKER_00": "Priya Sharma", "SPEAKER_01": "Daniel Okafor", "SPEAKER_02": "Mei Lin Chen"}
+    assert info["reviewed"] == info["filled"] == info["frames"] and info["review_reason"] == ""
 
 
 @needs_ffmpeg
